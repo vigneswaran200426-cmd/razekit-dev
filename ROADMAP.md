@@ -103,19 +103,23 @@ Deliverables:
 - Recovery event audit records
 
 ## Phase 7 — App / Website Execution
-**Status: planned**
+**Status: complete**
 
 Niomi capabilities:
-- Repository initialization
-- Frontend/backend implementation
-- Database setup
-- Auth
-- Browser automation
-- Automated tests
-- Build
-- Deployment
-- Smoke tests
-- Result packaging
+- Structured App/Web execution-plan contract
+- Repository initialization with Git
+- Workspace-scoped frontend/backend file implementation
+- Node/npm command execution with allowlisted executables
+- Database/auth/service operation adapter boundary
+- Browser smoke-test adapter boundary
+- Web deployment adapter boundary
+- Automated test execution
+- Build execution
+- Durable execution checkpoints
+- Persistent App/Web execution-run records
+- Artifact packaging with npm
+- Execution result and evidence written to the task blackboard
+- Workspace path escape protection
 
 ## Phase 8 — Game Execution
 **Status: planned**
