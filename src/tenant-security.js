@@ -50,6 +50,10 @@ export async function assertTaskAccess(taskId, principal, { allowAdmin = false }
   if (!allowAdmin && tenantId !== principal.tenantId) {
     throw new Error("Tenant access denied");
   }
+  const tenant = db.tenants.find(item => item.id === tenantId);
+  if (!allowAdmin && tenant && tenant.status !== "active") {
+    throw new Error("Tenant is suspended");
+  }
   if (!allowAdmin && task.userId && task.userId !== principal.userId) {
     throw new Error("User access denied");
   }
