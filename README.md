@@ -64,12 +64,27 @@ npm test
 
 GitHub Actions runs the test suite on pushes and pull requests.
 
+## Phase 4 — Niomi / Konami Model Orchestrator
+
+- Per-agent Fable and Astra model sessions
+- Planner → implementer → reviewer orchestration
+- Private task blackboard per agent
+- Model request/response history per session
+- Context compaction and persistent snapshots
+- Retryable vs terminal model failures
+- Per-model usage and cost accounting
+- Internal orchestration provision / step / state APIs
+- Deterministic model adapters for CI tests
+
+The model layer is provider-neutral. Real production model credentials/adapters are deliberately not embedded in this phase.
+
 ## Next phases
 
-Phase 4 connects the isolated agent instances to the Niomi/Konami model orchestrator.
+Phase 5 adds the tool/MCP/permission broker around these model sessions.
 
 Then:
-1. Tool + MCP + permission broker
+1. Persistent recovery system
+
 2. Persistent recovery system
 3. App/Web execution
 4. Game execution
