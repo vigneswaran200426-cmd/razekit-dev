@@ -297,7 +297,7 @@ test("multiple pending permissions keep the agent waiting until all are resolved
   const stillWaiting = dbAfter.agentInstances.find(x => x.id === agent.id);
   assert.equal(stillWaiting.status, AGENT_STATUS.WAITING_USER);
 });
-\ntest.after(async () => {
+test.after(async () => {
   await rm(dataDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
 });
