@@ -173,17 +173,21 @@ Deliverables:
 - Browser dashboard at `/` with task chat, decisions, progress, budget and deliverables
 
 ## Phase 11 — Security, Secrets & Billing
-**Status: planned**
+**Status: complete**
 
 Deliverables:
-- Secret vault abstraction
-- Scoped temporary credentials
-- Provider billing adapters
-- Hard spend enforcement
-- Audit logs
-- Tenant isolation
-- Abuse limits
-- Admin controls
+- Provider-neutral secret vault abstraction with reference-only production boundary
+- Scoped temporary credential leases with expiry, scope validation and revocation
+- Provider billing adapter contract and registry with deterministic test adapter
+- Atomic hard-spend reservations and capture enforcement
+- Idempotent provider billing charges
+- Durable billing ledger and spend provenance
+- Redacted append-only audit records for security-sensitive actions
+- Tenant and user task isolation with suspended-tenant fail-closed behavior
+- Per-tenant active-task, command-rate, tool-call-rate and hourly-spend abuse limits
+- Admin token boundary and tenant security controls
+- Tenant suspend/resume, limits, credential revocation, task cancellation and audit inspection
+- Protected public task mutation surface
 
 ## Phase 12 — Production Infrastructure
 **Status: planned**
