@@ -2,6 +2,8 @@ import { id, loadDb, transact } from "./store.js";
 import { authorizeToolCall } from "./permission-broker.js";
 import { getTool } from "./tool-registry.js";
 import { resolveCredentialReference, requestCredentialReference } from "./credential-vault.js";
+import { enforceTenantLimit } from "./abuse-controls.js";
+import { tenantForTask, writeAudit } from "./tenant-security.js";
 
 export class ToolAdapterRegistry {
   constructor() {
@@ -34,8 +36,10 @@ export class ToolBroker {
   }
 
   async invoke({ agentInstanceId, toolKey, input = {}, scopes = [], credentialProvider = null }) {
-    const decision = await authorizeToolCall(agentInstanceId, toolKey, scopes);
     const taskId = await this.getAgentTaskId(agentInstanceId);
+    const tenantId = await tenantForTask(taskId);
+    await enforceTenantLimit(tenantId, "toolCallsPerMinute", "tool.call");
+    const decision = await authorizeToolCall(agentInstanceId, toolKey, scopes);
     const baseAudit = {
       id: id("toolcall"),
       agentInstanceId,
@@ -137,8 +141,8 @@ export class ToolBroker {
   }
 
   async audit(event) {
-    return transact(db => {
-      const item = {
+    const item = await transact(db => {
+      const record = {
         ...event,
         requestHash: hashStable({
           agentInstanceId: event.agentInstanceId,
@@ -147,9 +151,22 @@ export class ToolBroker {
           createdAt: event.createdAt
         })
       };
-      db.toolCalls.push(item);
-      return item;
+      db.toolCalls.push(record);
+      return record;
     });
+    await writeAudit({
+      tenantId: await tenantForTask(event.taskId),
+      action: "tool.call",
+      resourceType: "tool",
+      resourceId: item.id,
+      outcome: item.status === "failed" ? "failed" : "success",
+      metadata: {
+        toolKey: item.toolKey,
+        status: item.status,
+        requestedScopes: item.requestedScopes
+      }
+    });
+    return item;
   }
 }
 
