@@ -92,6 +92,41 @@ function dbWorkspace(db, workspaceId) {
   return db.workspaces.find(x => x.id === workspaceId);
 }
 
+
+test("verification persists passed acceptance state and allows completion when an artifact exists", async () => {
+  const { agent } = await makeTask({ withRun: true });
+  const db = await loadDb();
+  const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(path.join(workspace.path, "artifacts"), { recursive: true });
+  await writeFile(path.join(workspace.path, "artifacts", "site.tgz"), "artifact");
+
+  await transact(state => {
+    const run = state.executionRuns.find(x => x.agentInstanceId === agent.id);
+    run.result.plan.steps.push({
+      id: "package",
+      kind: APP_WEB_STEP_KINDS.PACKAGE,
+      phase: "package",
+      state: "passed",
+      result: {
+        outputDir: "artifacts",
+        files: ["site.tgz"]
+      }
+    });
+  });
+
+  const result = await verifyTask(agent.id);
+  assert.equal(result.status, "passed");
+
+  const completed = await completeAgent(agent.id, "Verified completion");
+  assert.equal(completed.status, "completed");
+
+  const after = await loadDb();
+  const task = after.tasks.find(x => x.id === agent.taskId);
+  assert.equal(task.status, TASK_STATUS.COMPLETED);
+  assert.equal(after.acceptanceCriteria.find(x => x.taskId === agent.taskId).status, "passed");
+});
+
 test("verification fails without a completed execution run", async () => {
   const { agent } = await makeTask();
   const result = await verifyTask(agent.id, { requireArtifact: false });
