@@ -385,7 +385,17 @@ const server = http.createServer(async (req,res) => {
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
       if(!i.content?.trim()) return json(res,400,{error:"content is required"});
-      return json(res,200,await submitUserCommand(m[1],i.content));
+      const result = await submitUserCommand(m[1],i.content);
+      await writeAudit({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        requestId: principal.requestId,
+        action: "task.command",
+        resourceType: "task",
+        resourceId: m[1],
+        metadata: { mode: result.mode, changeId: result.change?.id || null }
+      });
+      return json(res,200,result);
     }
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/approve$/);
