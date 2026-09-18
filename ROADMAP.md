@@ -87,18 +87,20 @@ Deliverables:
 - Approval boundary for genuinely new permissions
 
 ## Phase 6 — Persistence, Recovery & Reliability
-**Status: planned**
+**Status: complete**
 
 Deliverables:
-- Durable database schema
-- State checkpoints
-- Worker crash recovery
-- Instance recreation
-- Resume from last safe checkpoint
-- Idempotent operations
-- Job queue
-- Retry policies
-- Dead-letter / blocked state
+- Versioned durable database schema and migrations
+- Durable state checkpoints with per-scope versioning
+- Worker lease-expiry recovery
+- One-active-instance enforcement during recreation
+- Resume from the failed worker checkpoint
+- Model/session/blackboard/orchestration state carry-forward
+- Expiring idempotency claims
+- Persistent job queue with deterministic claim filters
+- Job leases, retry/backoff policies and lease recovery
+- Dead-letter and blocked states
+- Recovery event audit records
 
 ## Phase 7 — App / Website Execution
 **Status: planned**
