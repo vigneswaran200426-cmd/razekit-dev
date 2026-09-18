@@ -91,10 +91,13 @@ test("signed principal mode rejects forged tenant headers", async () => {
   process.env.RAZEKIT_REQUIRE_SIGNED_PRINCIPAL = "true";
   process.env.RAZEKIT_PRINCIPAL_SECRET = secret;
 
-  assert.deepEqual(
-    principalFromHeaders({ "x-razekit-principal": token, "x-razekit-tenant-id": "forged-tenant" }),
-    { tenantId: "signed-tenant", userId: "signed-user", requestId: assert.any ? undefined : undefined }
-  );
+  const principal = principalFromHeaders({
+    "x-razekit-principal": token,
+    "x-razekit-tenant-id": "forged-tenant"
+  });
+  assert.equal(principal.tenantId, "signed-tenant");
+  assert.equal(principal.userId, "signed-user");
+  assert.ok(principal.requestId);
 });
 
 test("task access is tenant and user scoped", async () => {
