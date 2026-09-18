@@ -34,7 +34,9 @@ const {
 const {
   buildContainerSpec,
   buildMicroVMRuntimeSpec,
-  buildGpuWorkerSpec
+  buildGpuWorkerSpec,
+  DockerContainerRuntime,
+  FirecrackerMicroVMRuntime
 } = await import("../src/production-runtimes.js");
 const { createNetworkPolicy, assertNetworkAccess } = await import("../src/network-policy.js");
 const { LocalPersistentObjectStore, persistArtifact } = await import("../src/object-storage.js");
@@ -46,6 +48,7 @@ const {
   listAlerts,
   metricsSnapshot
 } = await import("../src/observability.js");
+const { PostgresStateAdapter, DurableStateRegistry } = await import("../src/persistent-state.js");
 
 async function makeTask(title = "Production infrastructure task") {
   const now = new Date().toISOString();
@@ -264,6 +267,78 @@ test("production runtime specs fail closed on unsafe container configuration", (
 
   const gpu = buildGpuWorkerSpec({ vendor: "nvidia", deviceCount: 1 });
   assert.equal(gpu.resourceClass, "gpu");
+});
+
+test("production runtime drivers expose provision, execute and terminate lifecycle", async () => {
+  const calls = [];
+  const driver = {
+    async create(spec) { calls.push(["create", spec.runtime]); return { id: "runtime-1" }; },
+    async start(id) { calls.push(["start", id]); },
+    async execute(id, command) { calls.push(["execute", id, command]); return { ok: true }; },
+    async stop(id) { calls.push(["stop", id]); },
+    async remove(id) { calls.push(["remove", id]); },
+    async destroy(id) { calls.push(["destroy", id]); }
+  };
+
+  const container = new DockerContainerRuntime(driver);
+  const provisioned = await container.provision({ runtime: "container" });
+  assert.equal(provisioned.runtimeId, "runtime-1");
+  assert.deepEqual(await container.execute("runtime-1", ["npm", "test"]), { ok: true });
+  await container.terminate("runtime-1");
+
+  const vm = new FirecrackerMicroVMRuntime(driver);
+  const vmProvisioned = await vm.provision({ runtime: "microvm" });
+  assert.equal(vmProvisioned.runtimeId, "runtime-1");
+  await vm.execute("runtime-1", ["./game"]);
+  await vm.terminate("runtime-1");
+
+  assert.deepEqual(calls.map(item => item[0]), [
+    "create","start","execute","stop","remove",
+    "create","start","execute","stop","destroy"
+  ]);
+});
+
+test("durable state adapter performs transactional rollback and commit", async () => {
+  const calls = [];
+  let committed = false;
+  const fakeClient = {
+    async query(sql) {
+      calls.push(sql);
+      if (sql === "BEGIN") committed = false;
+      if (sql === "COMMIT") committed = true;
+      if (sql === "ROLLBACK") committed = false;
+      if (sql === "SELECT 1 AS ok") return { rows: [{ ok: 1 }] };
+      return { rows: [] };
+    },
+    release() {}
+  };
+  const pool = {
+    async query(sql) {
+      if (sql === "SELECT 1 AS ok") return { rows: [{ ok: 1 }] };
+      return { rows: [] };
+    },
+    async connect() { return fakeClient; }
+  };
+
+  const adapter = new PostgresStateAdapter({ pool });
+  assert.equal(await adapter.health(), true);
+  await adapter.transaction(async client => {
+    await client.query("SELECT 2");
+    return "committed";
+  });
+  assert.equal(committed, true);
+  assert.ok(calls.includes("BEGIN"));
+  assert.ok(calls.includes("COMMIT"));
+
+  await assert.rejects(
+    () => adapter.transaction(async () => { throw new Error("forced rollback"); }),
+    /forced rollback/
+  );
+  assert.equal(calls.includes("ROLLBACK"), true);
+
+  const registry = new DurableStateRegistry();
+  registry.configure(adapter);
+  assert.equal(registry.get(), adapter);
 });
 
 test("network policy defaults to deny and blocks local/private targets", async () => {
