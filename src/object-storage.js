@@ -116,7 +116,8 @@ export async function persistArtifact({
 }) {
   if (!store || typeof store.put !== "function") throw new Error("Object storage adapter is required");
   if (!taskId?.trim()) throw new Error("taskId is required");
-  const result = await store.put(objectKey, value, { tenantId, taskId, artifactType, ...metadata });
+  const scopedKey = safeObjectKey(tenantId + "/" + objectKey);
+  const result = await store.put(scopedKey, value, { tenantId, taskId, artifactType, ...metadata });
 
   await transact(db => {
     const item = db.artifactObjects.find(entry => entry.objectKey === result.objectKey);
