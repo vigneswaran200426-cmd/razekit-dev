@@ -42,6 +42,7 @@ export async function suspendTenant(tenantId, actor = "admin") {
     tenant.updatedAt = new Date().toISOString();
     for (const task of db.tasks.filter(item => (item.tenantId || "local-tenant") === tenantId)) {
       if ([TASK_STATUS.RUNNING, TASK_STATUS.QUEUED, TASK_STATUS.WAITING_USER].includes(task.status)) {
+        task.suspendedPreviousStatus = task.status;
         task.status = TASK_STATUS.PAUSED;
         task.pausedReason = "tenant_suspended";
         task.updatedAt = tenant.updatedAt;
@@ -51,6 +52,7 @@ export async function suspendTenant(tenantId, actor = "admin") {
       const task = db.tasks.find(item => item.id === agent.taskId);
       if (task && (task.tenantId || "local-tenant") === tenantId &&
           [AGENT_STATUS.RUNNING, AGENT_STATUS.WAITING_USER].includes(agent.status)) {
+        agent.suspendedPreviousStatus = agent.status;
         agent.status = AGENT_STATUS.BLOCKED;
         agent.executionState = "blocked";
         agent.blockedReason = "tenant_suspended";
@@ -88,7 +90,8 @@ export async function resumeTenant(tenantId, actor = "admin") {
       item.status === TASK_STATUS.PAUSED &&
       item.pausedReason === "tenant_suspended"
     )) {
-      task.status = TASK_STATUS.RUNNING;
+      task.status = task.suspendedPreviousStatus || TASK_STATUS.RUNNING;
+      task.suspendedPreviousStatus = null;
       task.pausedReason = null;
       task.updatedAt = tenant.updatedAt;
     }
@@ -100,8 +103,9 @@ export async function resumeTenant(tenantId, actor = "admin") {
         agent.status === AGENT_STATUS.BLOCKED &&
         agent.blockedReason === "tenant_suspended"
       ) {
-        agent.status = AGENT_STATUS.RUNNING;
-        agent.executionState = "running";
+        agent.status = agent.suspendedPreviousStatus || AGENT_STATUS.RUNNING;
+        agent.suspendedPreviousStatus = null;
+        agent.executionState = agent.status === AGENT_STATUS.WAITING_USER ? "waiting_user" : "running";
         agent.blockedReason = null;
       }
     }
