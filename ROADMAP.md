@@ -139,16 +139,20 @@ Konami capabilities:
 - Engine isolation and workspace escape protection
 
 ## Phase 9 — Verification & 100% Completion
-**Status: planned**
+**Status: complete**
 
 Deliverables:
-- Acceptance-criteria evaluator
-- Unit/integration/e2e testing
-- Build verification
-- Deployment verification
-- Artifact verification
-- Failure classification
-- Completion gate
+- Objective acceptance-criteria evaluator
+- Verification runs persisted per task/agent
+- Execution evidence inspection
+- Unit/integration/e2e result gating
+- Test/build/playtest/smoke verification
+- Deployment verification when a deployment step exists
+- Artifact existence and workspace-boundary verification
+- Hard budget verification
+- Isolation/security verification
+- Failure classification by execution domain
+- Completion gate that rejects manual acceptance-only completion
 
 ## Phase 10 — User Control Dashboard
 **Status: planned**
