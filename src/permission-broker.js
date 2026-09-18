@@ -187,7 +187,8 @@ export async function denyPermission(permissionRequestId, reason = "Permission d
     return item;
   });
 
-  await updateWaitingState(request.agentInstanceId, false);
+  const pending = await listPendingRequests(request.agentInstanceId);
+  await updateWaitingState(request.agentInstanceId, pending.length > 0);
   return request;
 }
 
