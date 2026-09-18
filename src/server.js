@@ -158,8 +158,11 @@ const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = u.pathname;
-    const principal = principalFromHeaders(req.headers);
 
+    // Liveness is answered before identity is resolved. A load balancer, an
+    // orchestrator and an uptime check all call /health anonymously, so
+    // requiring a signed principal here would mark a perfectly healthy engine
+    // permanently unhealthy the moment signed principals were enforced.
     if (req.method === "GET" && p === "/health") {
       return json(res,200,{
         ok:true,
@@ -171,23 +174,31 @@ const server = http.createServer(async (req,res) => {
       });
     }
 
+    // Likewise the standalone dashboard shell: it is a static page that then
+    // authenticates its own API calls.
+    if (req.method === "GET" && p === "/") {
+      res.writeHead(200, {"Content-Type":"text/html; charset=utf-8"});
+      return res.end(dashboardPage);
+    }
+
+    // Everything past this point is identified. When signed principals are
+    // required this throws for an unsigned or forged caller.
+    const principal = principalFromHeaders(req.headers);
+
     // Drives the autonomous loop on demand. The coordinator already ticks on a
     // timer; these exist so an integration test, or an operator watching a
     // stuck task, can step the machine deliberately instead of waiting.
     if (req.method === "POST" && p === "/internal/loop/tick") {
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
       return json(res,200,await advanceAllAgents({ orchestrator: modelOrchestrator }));
     }
 
     const advanceMatch=p.match(/^\/internal\/agents\/([^/]+)\/advance$/);
     if(req.method==="POST"&&advanceMatch){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
       const agent=await getAgent(advanceMatch[1]);
       if(!agent)return json(res,404,{error:"Agent not found"});
       return json(res,200,await advanceAgent(advanceMatch[1],{ orchestrator: modelOrchestrator }));
-    }
-
-    if (req.method === "GET" && p === "/") {
-      res.writeHead(200, {"Content-Type":"text/html; charset=utf-8"});
-      return res.end(dashboardPage);
     }
 
     if (req.method === "POST" && p === "/api/tasks/analyze") {

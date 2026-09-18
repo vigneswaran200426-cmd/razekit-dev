@@ -17,6 +17,7 @@ export class RuntimeCoordinator {
     // agents; it just cannot drive them. That is the shape the tests use.
     this.orchestrator = orchestrator;
     this.timer = null;
+    this.running = false;
   }
 
   async tick() {
@@ -51,11 +52,31 @@ export class RuntimeCoordinator {
     }
   }
 
+  /**
+   * Runs a tick unless one is already in flight.
+   *
+   * A tick advances real builds, and a build step — npm install, a test run, a
+   * compile — routinely outlasts the tick interval. setInterval does not care:
+   * it fires again regardless, and two overlapping ticks both see the same
+   * agent waiting to execute and both start it. The work is then done twice,
+   * concurrently, in one workspace, and the retry ceiling trips on failures
+   * that were really collisions.
+   */
+  async tickIfIdle() {
+    if (this.running) return { ok: true, skipped: true };
+    this.running = true;
+    try {
+      return await this.tick();
+    } finally {
+      this.running = false;
+    }
+  }
+
   start() {
     if (this.timer) return;
-    this.tick().catch(() => {});
+    this.tickIfIdle().catch(() => {});
     this.timer = setInterval(() => {
-      this.tick().catch(() => {});
+      this.tickIfIdle().catch(() => {});
     }, this.tickMs);
   }
 

@@ -190,6 +190,15 @@ async function runVerification(agent) {
   return { stage: LOOP_STAGE.COMPLETED, status: "passed", agentStatus: completed.status };
 }
 
+// Agents currently mid-transition in this process.
+//
+// A transition can take minutes — a test suite, a build — while the coordinator
+// ticks on a much shorter interval and an operator can hit the advance endpoint
+// at any moment. Two transitions for one agent would run two executions
+// concurrently in one workspace and race each other's state writes, so a second
+// caller is told the agent is busy rather than being allowed to start.
+const inFlight = new Set();
+
 /**
  * Performs at most one transition for one agent.
  *
@@ -199,7 +208,19 @@ async function runVerification(agent) {
  */
 export async function advanceAgent(agentInstanceId, { orchestrator } = {}) {
   if (!orchestrator) throw new Error("A model orchestrator is required");
+  if (inFlight.has(agentInstanceId)) {
+    return { stage: LOOP_STAGE.IDLE, busy: true, reason: "A transition is already running for this agent" };
+  }
 
+  inFlight.add(agentInstanceId);
+  try {
+    return await advanceAgentUnguarded(agentInstanceId, { orchestrator });
+  } finally {
+    inFlight.delete(agentInstanceId);
+  }
+}
+
+async function advanceAgentUnguarded(agentInstanceId, { orchestrator }) {
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
 
