@@ -9,6 +9,7 @@ import {
   agentTypeForTask,
   toolManifestForTask
 } from "./domain.js";
+import { WORKER_RUNTIME_STATE } from "./runtime-domain.js";
 
 const WORKSPACE_ROOT = path.resolve(process.env.RAZEKIT_WORKSPACE_ROOT || "data/workspaces");
 
@@ -70,7 +71,13 @@ export async function spawnAgentForTask(taskId) {
       agentInstanceId: null,
       runtime: agentType === AGENT_TYPES.KONAMI ? "game-worker" : "app-web-worker",
       status: WORKER_STATUS.READY,
+      runtimeState: WORKER_RUNTIME_STATE.READY,
       heartbeatAt: null,
+      leaseId: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      checkpoint: null,
+      checkpointAt: null,
       createdAt: now,
       stoppedAt: null
     };
@@ -151,6 +158,7 @@ export async function startAgent(agentId) {
     agent.iteration += 1;
 
     worker.status = WORKER_STATUS.RUNNING;
+    worker.runtimeState = WORKER_RUNTIME_STATE.RUNNING;
     worker.heartbeatAt = now;
 
     workspace.status = "active";
@@ -331,6 +339,7 @@ async function terminalTransition(agentId, status, taskStatus, reason) {
 
     if (worker) {
       worker.status = WORKER_STATUS.STOPPED;
+      worker.runtimeState = WORKER_RUNTIME_STATE.STOPPED;
       worker.stoppedAt = now;
     }
     if (workspace) {
