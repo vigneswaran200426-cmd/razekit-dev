@@ -130,6 +130,10 @@ test("expired worker lease recreates exactly one active agent and carries checkp
 
   const oldAgent = after.agentInstances.find(x => x.id === agent.id);
   const oldWorker = after.workers.find(x => x.id === worker.id);
+  const activeWorkspaces = after.workspaces.filter(x =>
+    x.taskId === agent.taskId && x.status === "active"
+  );
+  assert.equal(activeWorkspaces.length, 1);
   assert.equal(oldAgent.status, AGENT_STATUS.FAILED);
   assert.equal(oldWorker.status, WORKER_STATUS.FAILED);
   assert.equal(after.tasks.find(x => x.id === agent.taskId).agentInstanceId, activeAgents[0].id);
@@ -186,6 +190,46 @@ test("completed jobs require the active lease and persist the result", async () 
   const completed = await completeJob(job.id, claimed.leaseId, { ok: true });
   assert.equal(completed.status, "completed");
   assert.deepEqual(completed.result, { ok: true });
+});
+
+test("idempotent operations reject a second concurrent claim and can recover stale claims", async () => {
+  const { transact: dbTransact } = await import("../src/store.js");
+  await dbTransact(db => {
+    db.idempotencyRecords.push({
+      id: id("idem"),
+      operationName: "stale-operation",
+      idempotencyKey: "stale-key",
+      status: "processing",
+      result: null,
+      createdAt: new Date(Date.now() - 600000).toISOString(),
+      updatedAt: new Date(Date.now() - 600000).toISOString(),
+      expiresAt: new Date(Date.now() - 1000).toISOString()
+    });
+  });
+
+  const recovered = await runIdempotent("stale-operation", "stale-key", async () => ({
+    recovered: true
+  }));
+  assert.deepEqual(recovered, { recovered: true });
+
+  await assert.rejects(
+    async () => {
+      await dbTransact(db => {
+        db.idempotencyRecords.push({
+          id: id("idem"),
+          operationName: "active-operation",
+          idempotencyKey: "active-key",
+          status: "processing",
+          result: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60000).toISOString()
+        });
+      });
+      await runIdempotent("active-operation", "active-key", async () => ({ no: "run" }));
+    },
+    /already in progress/
+  );
 });
 
 test("idempotent operations return the first committed result", async () => {
