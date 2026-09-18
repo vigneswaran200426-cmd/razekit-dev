@@ -71,6 +71,14 @@ import {
   executeGameTask,
   listGameRuns
 } from "./game-executor.js";
+import {
+  taskDashboard,
+  taskEvents,
+  submitUserCommand,
+  approveChange,
+  denyChange
+} from "./dashboard.js";
+import { dashboardPage } from "./dashboard-page.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const runtimeCoordinator = createRuntimeCoordinator();
@@ -172,7 +180,7 @@ const server = http.createServer(async (req,res) => {
 
     if (req.method === "GET" && p === "/") {
       res.writeHead(200, {"Content-Type":"text/html; charset=utf-8"});
-      return res.end(page);
+      return res.end(dashboardPage);
     }
 
     if (req.method === "POST" && p === "/api/tasks/analyze") {
@@ -300,6 +308,45 @@ const server = http.createServer(async (req,res) => {
         budgetLimit:t.maxBudget,heartbeat:a?.lastHeartbeat||null
       });
     }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/dashboard$/);
+    if(req.method==="GET"&&m){
+      const dashboard=await taskDashboard(m[1]);
+      if(!dashboard)return json(res,404,{error:"Task not found"});
+      return json(res,200,dashboard);
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/events$/);
+    if(req.method==="GET"&&m){
+      const events=await taskEvents(m[1]);
+      if(events===null)return json(res,404,{error:"Task not found"});
+      return json(res,200,events);
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/commands$/);
+    if(req.method==="POST"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      const i=await body(req);
+      return json(res,200,await submitUserCommand(m[1],i.content));
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/approve$/);
+    if(req.method==="POST"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      const i=await body(req);
+      return json(res,200,await approveChange(m[1],m[2],{maxBudget:i.maxBudget??null}));
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/deny$/);
+    if(req.method==="POST"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      const i=await body(req);
+      return json(res,200,await denyChange(m[1],m[2],i.reason||"User declined the requested change"));
+    }
+
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/acceptance$/);
     if(req.method==="GET"&&m){
