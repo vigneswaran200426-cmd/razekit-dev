@@ -33,7 +33,8 @@ const initialState = {
   jobs: [],
   idempotencyRecords: [],
   recoveryEvents: [],
-  executionRuns: []
+  executionRuns: [],
+  verificationRuns: []
 };
 
 function migrateState(raw) {
