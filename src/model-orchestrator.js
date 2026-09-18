@@ -121,6 +121,15 @@ export class ModelOrchestrator {
       return this.runCurrentPhase(agent, run, context);
     }
 
+    // A "revise" verdict sends the work back to Fable, not back to Astra: the
+    // architecture already passed review, and what failed is the
+    // implementation. Re-planning every cycle would pay the planner again to
+    // restate a plan nobody objected to, and would drop the review findings a
+    // cycle earlier than the implementer needs them.
+    if (run.status === ORCHESTRATION_STATUS.ITERATING) {
+      return this.runImplementation(agent, run, context);
+    }
+
     if (run.phase === null || run.phase === ORCHESTRATION_STATUS.REVIEWING) {
       return this.runPlanning(agent, run, context);
     }
@@ -268,6 +277,10 @@ export class ModelOrchestrator {
     });
 
     await writeBlackboard(agent.id, "last." + phase + ".response", response.output || response.text || response, session.provider);
+    // Astra's architecture plan and Fable's execution plan are different
+    // artifacts and live under different keys: the executor runs only what is
+    // under execution.plan, so an architecture sketch must never land there.
+    if (response.architecture) await writeBlackboard(agent.id, "architecture.plan", response.architecture, session.provider);
     if (response.plan) await writeBlackboard(agent.id, "execution.plan", response.plan, session.provider);
     if (response.implementation) await writeBlackboard(agent.id, "implementation.result", response.implementation, session.provider);
     if (response.review) await writeBlackboard(agent.id, "review.result", response.review, session.provider);
