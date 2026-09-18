@@ -156,15 +156,28 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 - Agent completion now requires a passing verification run plus passed acceptance criteria
 - Manual mutation of acceptance status alone cannot produce 100% completion
 
+## Phase 10 — User Control Dashboard
+
+- Chat-first browser control panel at `/`
+- High-value status projection without low-level tool/test noise
+- WORKING / DECISION NEEDED / IMPORTANT UPDATE / BLOCKED / COMPLETED states
+- Live user change commands
+- Impact classification for in-scope versus scope-expanding requests
+- Hard-budget impact checks before approval
+- Persistent change requests and user-facing update history
+- Task progress derived from execution and acceptance evidence
+- Deliverable aggregation from execution artifacts
+- Approve/decline flow for scope changes
+
 ## Next phases
 
-Phase 9 is the next implementation target: Verification and 100% completion.
+Phase 10 is complete.
 
 Then:
-1. Verification / 100% completion
-2. User dashboard and live task changes
-3. Security, secrets and billing
-4. Production worker infrastructure
-5. RazeKit integration
+1. Security, secrets and billing
+2. Production worker infrastructure
+3. RazeKit integration
+
+See `ROADMAP.md` for the complete phase contract.
 
 See `ROADMAP.md` for the complete phase contract.
