@@ -181,6 +181,7 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 - Active-task, command, tool-call and hourly-spend abuse controls
 - Admin token controls for tenant suspension/resume, limits, cancellations, credential revocation and audit inspection
 - Public task PATCH restricted to safe mutable fields
+- Optional HMAC-signed principal mode for production tenant/user authentication boundaries
 
 ## Next phases
 
