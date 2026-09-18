@@ -16,6 +16,14 @@ export function buildContainerSpec({
   if (!networkPolicyId?.trim()) throw new Error("Container networkPolicyId is required");
   if (privileged) throw new Error("Privileged containers are not permitted");
   if (!Array.isArray(command)) throw new Error("Container command must be an array");
+
+  const numericCpu = Number(cpu);
+  const numericMemory = Number(memoryMiB);
+  const numericPids = Number(pidsLimit);
+  if (!Number.isFinite(numericCpu) || numericCpu <= 0) throw new Error("Container CPU limit must be positive");
+  if (!Number.isFinite(numericMemory) || numericMemory < 128) throw new Error("Container memory limit must be at least 128MiB");
+  if (!Number.isFinite(numericPids) || numericPids < 64) throw new Error("Container pidsLimit must be at least 64");
+
   if (Object.keys(environment).some(key => /secret|token|password|key/i.test(key))) {
     throw new Error("Secrets must not be embedded in container environment configuration");
   }
