@@ -184,6 +184,10 @@ export async function chargeProvider({
     provider
   });
 
+  if (reservation.status === "captured") {
+    return { reservation, authorization: null, capture: null, idempotentReplay: true };
+  }
+
   try {
     const authorization = await adapter.authorize({
       amount: reservation.amount,
