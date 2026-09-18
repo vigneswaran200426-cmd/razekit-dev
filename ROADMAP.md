@@ -171,6 +171,7 @@ Deliverables:
 - Scope changes paused for explicit user approval
 - Hard-budget impact validation before approval
 - Browser dashboard at `/` with task chat, decisions, progress, budget and deliverables
+- Complete standalone frontend control center with task creation/preflight, live polling, responsive mobile layout, cancellation, editing, approvals, budget escalation and toast feedback
 
 ## Phase 11 — Security, Secrets & Billing
 **Status: complete**
