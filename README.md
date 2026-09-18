@@ -92,21 +92,34 @@ The model layer is provider-neutral. Real production model credentials/adapters 
 
 Real provider-specific OAuth adapters and production secret-vault integration remain external infrastructure work; this phase keeps secrets out of the application database.
 
+## Phase 6 — Persistence, Recovery & Reliability
+
+- Versioned durable state schema with migrations
+- Durable per-agent checkpoints with versioning
+- Worker lease-expiry detection and automatic agent recreation
+- One active workspace/agent instance maintained per task during recovery
+- Failed worker checkpoint carried into the recreated worker
+- Fable/Astra model sessions, messages, usage, blackboard and orchestration state carried forward
+- Persistent job queue with leases and deterministic claim filters
+- Retry/backoff, blocked and dead-letter job states
+- Expired job lease recovery
+- Idempotency claims with stale-claim recovery
+- Recovery event records
+- Internal checkpoint, queue and recovery APIs
+
+Production deployment still requires a real durable database, distributed queue/lock service and external workflow runner; this phase establishes the application-level contracts and recovery semantics.
+
 ## Next phases
 
-Phase 6 is the next implementation target: persistent recovery and reliability.
+Phase 7 is the next implementation target: App / Website execution through Niomi.
 
 Then:
 1. App/Web execution
-
-
-2. Persistent recovery system
-3. App/Web execution
-4. Game execution
-5. Verification / 100% completion
-6. User dashboard and live task changes
-7. Security, secrets and billing
-8. Production worker infrastructure
-9. RazeKit integration
+2. Game execution
+3. Verification / 100% completion
+4. User dashboard and live task changes
+5. Security, secrets and billing
+6. Production worker infrastructure
+7. RazeKit integration
 
 See `ROADMAP.md` for the complete phase contract.
