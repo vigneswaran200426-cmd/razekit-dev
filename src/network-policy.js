@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { lookup } from "node:dns/promises";
 import { id, loadDb, transact } from "./store.js";
 
 const PRIVATE_IPV4 = [
@@ -96,4 +97,17 @@ export async function createNetworkPolicy({
 export async function getNetworkPolicy(policyId) {
   const db = await loadDb();
   return db.networkPolicies.find(item => item.id === policyId) || null;
+}
+
+
+export async function assertResolvedNetworkAccess(policy, target) {
+  const allowed = assertNetworkAccess(policy, target);
+  const records = await lookup(allowed.hostname, { all: true });
+  if (records.some(record => isPrivateIp(record.address))) {
+    throw new Error("Resolved network target points to a private or local address");
+  }
+  return {
+    ...allowed,
+    resolvedAddresses: records.map(record => record.address)
+  };
 }
