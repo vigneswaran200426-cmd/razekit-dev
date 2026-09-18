@@ -10,6 +10,7 @@ import {
   toolManifestForTask
 } from "./domain.js";
 import { WORKER_RUNTIME_STATE } from "./runtime-domain.js";
+import { verifyTask } from "./verification.js";
 
 const WORKSPACE_ROOT = path.resolve(process.env.RAZEKIT_WORKSPACE_ROOT || "data/workspaces");
 
@@ -371,6 +372,11 @@ export async function cancelAgent(agentId, reason = "Cancelled by user") {
 export async function completeAgent(agentId, resultSummary = "Task completed") {
   const agent = await getAgent(agentId);
   if (!agent) throw new Error("Agent instance not found");
+
+  const verification = await verifyTask(agentId);
+  if (verification.status !== "passed") {
+    throw new Error("Agent cannot complete: objective verification failed");
+  }
 
   const criteria = await acceptanceForTask(agent.taskId);
   const incomplete = criteria.filter(x => x.status !== "passed");
