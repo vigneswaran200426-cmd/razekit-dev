@@ -24,10 +24,23 @@ import {
   getWorkerRuntime,
   recoverExpiredWorkerLease
 } from "./worker-runtime.js";
+import { ModelAdapterRegistry } from "./model-runtime.js";
+import { ModelOrchestrator } from "./model-orchestrator.js";
+import { DeterministicFableAdapter, DeterministicAstraAdapter } from "./testing-model-adapters.js";
+import { listModelSessions } from "./model-sessions.js";
+import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const runtimeCoordinator = createRuntimeCoordinator();
+const modelRegistry = new ModelAdapterRegistry();
+
+if (process.env.RAZEKIT_ENABLE_TEST_MODEL_ADAPTERS === "true") {
+  modelRegistry.register("fable", new DeterministicFableAdapter());
+  modelRegistry.register("astra", new DeterministicAstraAdapter());
+}
+
+const modelOrchestrator = new ModelOrchestrator({ registry: modelRegistry });
 
 function json(res, status, payload) {
   res.writeHead(status, {"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
@@ -292,6 +305,37 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/complete$/);
     if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await completeAgent(m[1],i.resultSummary));}
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/model\/provision$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await modelOrchestrator.provision(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/model\/step$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await modelOrchestrator.step(m[1],i));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/model\/state$/);
+    if(req.method==="GET"&&m){
+      const state=await modelOrchestrator.getState(m[1]);
+      if(!state.run)return json(res,404,{error:"Model orchestration state not found"});
+      return json(res,200,state);
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/model\/sessions$/);
+    if(req.method==="GET"&&m){
+      return json(res,200,await listModelSessions(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/model\/blackboard$/);
+    if(req.method==="GET"&&m){
+      return json(res,200,{
+        entries:await readBlackboard(m[1]),
+        snapshots:await listContextSnapshots(m[1])
+      });
+    }
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/spend-check$/);
     if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await checkBudget(m[1],i.amount));}
