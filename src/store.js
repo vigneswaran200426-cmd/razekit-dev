@@ -28,7 +28,11 @@ const initialState = {
   permissionRequests: [],
   credentials: [],
   credentialRequests: [],
-  toolCalls: []
+  toolCalls: [],
+  stateCheckpoints: [],
+  jobs: [],
+  idempotencyRecords: [],
+  recoveryEvents: []
 };
 
 function migrateState(raw) {
