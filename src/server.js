@@ -79,6 +79,24 @@ import {
   denyChange
 } from "./dashboard.js";
 import { dashboardPage } from "./dashboard-page.js";
+import {
+  principalFromHeaders,
+  ensureTenant,
+  assertTenantActive,
+  assertTaskAccess,
+  writeAudit
+} from "./tenant-security.js";
+import { enforceTenantLimit, enforceActiveTaskLimit } from "./abuse-controls.js";
+import {
+  assertAdminToken,
+  tenantSecuritySummary,
+  suspendTenant,
+  resumeTenant,
+  updateTenantLimits,
+  cancelTenantTasks,
+  queryAudit
+} from "./admin-control.js";
+
 
 const PORT = Number(process.env.PORT || 3000);
 const runtimeCoordinator = createRuntimeCoordinator();
@@ -173,6 +191,7 @@ const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = u.pathname;
+    const principal = principalFromHeaders(req.headers);
 
     if (req.method === "GET" && p === "/health") {
       return json(res,200,{ok:true,service:"razekit-dev",time:new Date().toISOString()});
@@ -192,6 +211,9 @@ const server = http.createServer(async (req,res) => {
 
     if (req.method === "POST" && p === "/api/tasks") {
       const i=await body(req);
+      const tenant = await ensureTenant(principal.tenantId);
+      assertTenantActive(tenant);
+      await enforceActiveTaskLimit(principal.tenantId, principal);
       if(!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
       if(!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
       if(!Number.isFinite(Number(i.maxBudget))||Number(i.maxBudget)<=0) return json(res,400,{error:"maxBudget must be greater than zero"});
@@ -201,7 +223,8 @@ const server = http.createServer(async (req,res) => {
       const pf=buildPreflight(i);
       const task={
         id:id("task"),
-        userId:i.userId||"local-user",
+        userId:principal.userId,
+        tenantId:principal.tenantId,
         taskType:i.taskType,
         title:i.title||"Untitled task",
         originalRequest:i.originalRequest.trim(),
@@ -234,12 +257,23 @@ const server = http.createServer(async (req,res) => {
 
       const agent=await spawnAgentForTask(task.id);
       const started=await startAgent(agent.id);
+      await writeAudit({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        requestId: principal.requestId,
+        action: "task.create",
+        resourceType: "task",
+        resourceId: task.id,
+        metadata: { taskType: task.taskType, agentType: task.agentType }
+      });
       return json(res,201,{task:await getTask(task.id),agent:started});
     }
 
     if (req.method === "GET" && p === "/api/tasks") {
+      const tenant = await ensureTenant(principal.tenantId);
+      assertTenantActive(tenant);
       const db=await loadDb();
-      return json(res,200,db.tasks.map(t=>({
+      return json(res,200,db.tasks.filter(t => (t.tenantId || "local-tenant") === principal.tenantId && t.userId === principal.userId).map(t=>({
         ...t,
         agent:t.agentInstanceId?(db.agentInstances.find(a=>a.id===t.agentInstanceId)||null):null
       })));
@@ -247,12 +281,12 @@ const server = http.createServer(async (req,res) => {
 
     let m=p.match(/^\/api\/tasks\/([^/]+)$/);
     if(req.method==="GET"&&m){
-      const task=await getTask(m[1]);
-      if(!task)return json(res,404,{error:"Task not found"});
-      return json(res,200,task);
+      const task=await assertTaskAccess(m[1], principal);
+      return json(res,200,await getTask(task.id));
     }
 
     if(req.method==="PATCH"&&m){
+      await assertTaskAccess(m[1], principal);
       const i=await body(req);
       return json(res,200,await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
@@ -287,6 +321,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       if(task.agentInstanceId)await cancelAgent(task.agentInstanceId,"Task cancelled by user");
@@ -299,6 +334,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/progress$/);
     if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
       const db=await loadDb();const t=db.tasks.find(x=>x.id===m[1]);
       if(!t)return json(res,404,{error:"Task not found"});
       const a=t.agentInstanceId?db.agentInstances.find(x=>x.id===t.agentInstanceId):null;
@@ -311,6 +347,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/dashboard$/);
     if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
       const dashboard=await taskDashboard(m[1]);
       if(!dashboard)return json(res,404,{error:"Task not found"});
       return json(res,200,dashboard);
@@ -318,6 +355,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/events$/);
     if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
       const events=await taskEvents(m[1]);
       if(events===null)return json(res,404,{error:"Task not found"});
       return json(res,200,events);
@@ -325,6 +363,8 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/commands$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
+      await enforceTenantLimit(principal.tenantId, "commandsPerMinute", "task.command", principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
@@ -333,6 +373,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/approve$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
@@ -341,6 +382,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/deny$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
@@ -350,6 +392,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/acceptance$/);
     if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       return json(res,200,await acceptanceForTask(task.id));
@@ -357,6 +400,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/acceptance\/([^/]+)$/);
     if(req.method==="PATCH"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
@@ -365,11 +409,51 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/messages$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       if(!task.agentInstanceId)return json(res,409,{error:"Task has no agent instance"});
       const i=await body(req);
       return json(res,201,await addAgentMessage(task.agentInstanceId,"user",i.content,{source:"task-dashboard"}));
+    }
+
+
+    if(req.url && p.startsWith("/internal/admin/")){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+    }
+
+    m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/security$/);
+    if(req.method==="GET"&&m){
+      return json(res,200,await tenantSecuritySummary(m[1]));
+    }
+
+    m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/suspend$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await suspendTenant(m[1],"admin"));
+    }
+
+    m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/resume$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await resumeTenant(m[1],"admin"));
+    }
+
+    m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/limits$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await updateTenantLimits(m[1],i.limits||i,"admin"));
+    }
+
+    m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/cancel-tasks$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await cancelTenantTasks(m[1],"admin"));
+    }
+
+    if(req.method==="GET"&&p==="/internal/admin/audit"){
+      return json(res,200,await queryAudit({
+        tenantId:u.searchParams.get("tenantId")||null,
+        action:u.searchParams.get("action")||null,
+        limit:u.searchParams.get("limit")||100
+      }));
     }
 
     if(req.method==="POST"&&p==="/internal/jobs"){
