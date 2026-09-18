@@ -117,6 +117,10 @@ export class ModelOrchestrator {
       context = compactContext(context);
     }
 
+    if (run.status === ORCHESTRATION_STATUS.BLOCKED && run.phase) {
+      return this.runCurrentPhase(agent, run, context);
+    }
+
     if (run.phase === null || run.phase === ORCHESTRATION_STATUS.REVIEWING) {
       return this.runPlanning(agent, run, context);
     }
@@ -127,10 +131,6 @@ export class ModelOrchestrator {
 
     if (run.phase === ORCHESTRATION_STATUS.IMPLEMENTING) {
       return this.runReview(agent, run, context);
-    }
-
-    if (run.status === ORCHESTRATION_STATUS.BLOCKED && run.phase) {
-      return this.runCurrentPhase(agent, run, context);
     }
 
     throw new Error("Unknown orchestration phase: " + run.phase);
