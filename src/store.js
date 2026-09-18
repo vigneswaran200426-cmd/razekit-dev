@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DATA_DIR = path.resolve("data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+let transactionQueue = Promise.resolve();
 
 const initialState = {
   tasks: [],
@@ -31,16 +32,22 @@ export async function loadDb() {
 
 export async function saveDb(db) {
   await ensureDb();
-  await writeFile(DB_FILE, JSON.stringify(db, null, 2));
+  const tempFile = DB_FILE + ".tmp";
+  await writeFile(tempFile, JSON.stringify(db, null, 2));
+  await rename(tempFile, DB_FILE);
 }
 
 export function id(prefix) {
   return prefix + "_" + randomUUID();
 }
 
-export async function transact(mutator) {
-  const db = await loadDb();
-  const result = await mutator(db);
-  await saveDb(db);
-  return result;
+export function transact(mutator) {
+  const run = transactionQueue.then(async () => {
+    const db = await loadDb();
+    const result = await mutator(db);
+    await saveDb(db);
+    return result;
+  });
+  transactionQueue = run.catch(() => undefined);
+  return run;
 }
