@@ -60,6 +60,7 @@ import {
   getCheckpoint as getDurableCheckpoint
 } from "./reliability.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
+import { verifyTask, latestVerification, verificationSummary } from "./verification.js";
 import {
   buildAppWebExecutionPlan,
   executeAppWebTask,
@@ -445,6 +446,29 @@ const server = http.createServer(async (req,res) => {
       const agent=await getAgent(m[1]);
       if(!agent)return json(res,404,{error:"Agent not found"});
       return json(res,200,await listGameRuns(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/verification$/);
+    if(req.method==="POST"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const i=await body(req);
+      return json(res,200,await verifyTask(m[1],{
+        requireArtifact:i.requireArtifact !== false
+      }));
+    }
+
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,verificationSummary(await latestVerification(m[1])));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/verification\/latest$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await latestVerification(m[1]));
     }
 
     if(req.method==="GET"&&p==="/internal/tools"){
