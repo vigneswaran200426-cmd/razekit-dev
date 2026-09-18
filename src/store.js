@@ -6,7 +6,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -36,7 +36,14 @@ const initialState = {
   executionRuns: [],
   verificationRuns: [],
   taskChangeRequests: [],
-  userUpdates: []
+  userUpdates: [],
+  tenants: [],
+  auditLogs: [],
+  billingLedger: [],
+  billingReservations: [],
+  abuseCounters: [],
+  adminActions: [],
+  secretLeases: []
 };
 
 function migrateState(raw) {
@@ -51,6 +58,13 @@ function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-10-dashboard")) {
     db.migrationsApplied.push("phase-10-dashboard");
+  }
+  if (!db.migrationsApplied.includes("phase-11-security-billing")) {
+    db.migrationsApplied.push("phase-11-security-billing");
+  }
+  for (const task of db.tasks) {
+    if (!task.tenantId) task.tenantId = "local-tenant";
+    if (!task.userId) task.userId = "local-user";
   }
   db.schemaVersion = SCHEMA_VERSION;
   return db;
