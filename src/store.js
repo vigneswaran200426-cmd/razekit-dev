@@ -66,6 +66,16 @@ function migrateState(raw) {
     if (!task.tenantId) task.tenantId = "local-tenant";
     if (!task.userId) task.userId = "local-user";
   }
+  for (const agent of db.agentInstances) {
+    if (!agent.tenantId) {
+      agent.tenantId = db.tasks.find(task => task.id === agent.taskId)?.tenantId || "local-tenant";
+    }
+  }
+  for (const credential of db.credentials) {
+    if (!credential.tenantId) {
+      credential.tenantId = db.tasks.find(task => task.id === credential.taskId)?.tenantId || "local-tenant";
+    }
+  }
   db.schemaVersion = SCHEMA_VERSION;
   return db;
 }
