@@ -161,6 +161,20 @@ export async function captureSpend(reservationId) {
     });
 
     return reservation;
+  }).then(async result => {
+    await writeAudit({
+      tenantId: result.tenantId,
+      action: "billing.capture",
+      resourceType: "billing-reservation",
+      resourceId: result.id,
+      metadata: {
+        amount: result.amount,
+        category: result.category,
+        provider: result.provider,
+        idempotencyKey: result.idempotencyKey
+      }
+    });
+    return result;
   });
 }
 
