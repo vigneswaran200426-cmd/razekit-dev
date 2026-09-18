@@ -59,10 +59,18 @@ export async function reserveSpend(agentId, amount, reason, { idempotencyKey, ca
   const tenantId = await tenantForTask(agent.taskId);
   const tenant = await ensureTenant(tenantId);
 
-  const recentSpend = (await loadDb()).billingLedger
+  const billingState = await loadDb();
+  const recentSpend = billingState.billingLedger
     .filter(item => item.tenantId === tenantId && Date.parse(item.createdAt) >= Date.now() - 3_600_000)
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  if (recentSpend + spend > Number(tenant.limits?.spendPerHour ?? Infinity)) {
+  const recentReserved = billingState.billingReservations
+    .filter(item =>
+      item.tenantId === tenantId &&
+      item.status === "reserved" &&
+      Date.parse(item.createdAt) >= Date.now() - 3_600_000
+    )
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  if (recentSpend + recentReserved + spend > Number(tenant.limits?.spendPerHour ?? Infinity)) {
     throw new Error("Abuse limit exceeded: spendPerHour");
   }
 
