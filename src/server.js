@@ -301,7 +301,6 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,a.workspace);
     }
 
-    runtimeCoordinator.start();
     return json(res,404,{error:"Not found"});
   } catch(e) {
     return json(res,400,{error:e.message||"Unexpected error"});
@@ -320,4 +319,14 @@ function getTask(taskId){
   });
 }
 
-server.listen(PORT,()=>runtimeCoordinator.start());
+server.listen(PORT, () => runtimeCoordinator.start());
+
+function shutdown(signal) {
+  runtimeCoordinator.stop();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5000).unref();
+  console.log("RazeKit DEV shutting down after " + signal);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
