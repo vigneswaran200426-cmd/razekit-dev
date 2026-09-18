@@ -155,7 +155,7 @@ Deliverables:
 - Completion gate that rejects manual acceptance-only completion
 
 ## Phase 10 — User Control Dashboard
-**Status: planned**
+**Status: complete**
 
 Deliverables:
 - Chat-first control panel
@@ -166,6 +166,11 @@ Deliverables:
 - Budget impact checks
 - Task progress
 - Deliverables
+- Persistent user change requests and dashboard updates
+- Safe in-scope changes applied without routine approval
+- Scope changes paused for explicit user approval
+- Hard-budget impact validation before approval
+- Browser dashboard at `/` with task chat, decisions, progress, budget and deliverables
 
 ## Phase 11 — Security, Secrets & Billing
 **Status: planned**
