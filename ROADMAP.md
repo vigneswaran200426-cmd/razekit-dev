@@ -75,15 +75,15 @@ Deliverables:
 - Cost accounting per model action
 
 ## Phase 5 — Tool, MCP & Permission Broker
-**Status: in progress**
+**Status: complete**
 
 Deliverables:
 - Central tool registry
-- Per-agent tool manifests
-- Scoped permissions
-- One-time authorization scopes
-- OAuth / temporary credential handling
-- Tool-call auditing
+- Per-agent tool manifest enforcement
+- Scoped permissions and exact authorization scopes
+- One-time preauthorization from the task authorization plan
+- Credential-reference and expiry abstraction with explicit credential requests
+- Tool-call auditing and adapter availability auditing
 - Approval boundary for genuinely new permissions
 
 ## Phase 6 — Persistence, Recovery & Reliability
