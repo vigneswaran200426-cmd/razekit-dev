@@ -42,14 +42,16 @@ export class DeterministicGamePlaytestAdapter {
 export class DeterministicGamePackagerAdapter {
   constructor({ calls = [] } = {}) {
     this.calls = calls;
+    this.packageCount = 0;
   }
 
   async package(step) {
+    this.packageCount += 1;
     this.calls.push({ type: "package", engine: step.engine });
     return {
       ok: true,
       engine: step.engine,
-      artifactId: "game-artifact-" + this.calls.length,
+      artifactId: "game-artifact-" + this.packageCount,
       path: step.outputDir || "artifacts"
     };
   }
