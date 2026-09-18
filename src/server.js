@@ -513,7 +513,7 @@ const server = http.createServer(async (req,res) => {
     if(req.method==="GET"&&p==="/internal/infrastructure/status"){
       const pools=await listWorkerPools();
       const workers=await listProductionWorkers();
-      const metrics=await metricsSnapshot();
+      const metrics=await metricsSnapshot({persist:false});
       const alerts=await evaluateInfrastructureAlerts();
       return json(res,200,{pools,workers,metrics,alerts});
     }
