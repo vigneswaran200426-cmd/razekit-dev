@@ -1,23 +1,34 @@
 import { processReadyTasks, heartbeatAgent, completeAgent, failAgent } from "./agent-manager.js";
+import { recoverExpiredJobs, recoverExpiredWorkers } from "./reliability.js";
 
 export class RuntimeCoordinator {
   constructor({tickMs = Number(process.env.RAZEKIT_TICK_MS || 15000)} = {}) {
+    if (!Number.isFinite(tickMs) || tickMs < 100) {
+      throw new Error("tickMs must be at least 100 milliseconds");
+    }
     this.tickMs = tickMs;
     this.timer = null;
   }
 
   async tick() {
     try {
+      const workerRecovery = await recoverExpiredWorkers();
+      const jobRecovery = await recoverExpiredJobs();
       const agents = await processReadyTasks();
-      return {ok:true, started:agents.length};
+      return {
+        ok: true,
+        started: agents.length,
+        recoveredWorkers: workerRecovery.length,
+        recoveredJobs: jobRecovery.length
+      };
     } catch (error) {
-      return {ok:false, error:error.message};
+      return {ok: false, error: error.message};
     }
   }
 
   start() {
     if (this.timer) return;
-    this.tick();
+    this.tick().catch(() => {});
     this.timer = setInterval(() => {
       this.tick().catch(() => {});
     }, this.tickMs);
@@ -34,8 +45,6 @@ export function createRuntimeCoordinator(options) {
   return new RuntimeCoordinator(options);
 }
 
-// This adapter boundary is intentionally small. The real model/tool runner will plug in here.
-// It must return only after the external worker has either completed or failed.
 export async function executeWithRuntime(adapter, agentContext) {
   if (!adapter || typeof adapter.execute !== "function") {
     throw new Error("No execution runtime adapter is configured");
