@@ -73,7 +73,10 @@ export async function reserveSpend(agentId, amount, reason, { idempotencyKey, ca
     const current = db.agentInstances.find(item => item.id === agentId);
     if (!current) throw new Error("Agent instance not found");
 
-    const next = Number(current.budgetUsed || 0) + spend;
+    const reserved = db.billingReservations
+      .filter(item => item.agentInstanceId === agentId && item.status === "reserved")
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const next = Number(current.budgetUsed || 0) + reserved + spend;
     if (next > Number(current.budgetLimit)) throw new Error("Hard budget limit exceeded");
 
     const now = new Date().toISOString();
@@ -106,8 +109,11 @@ export async function captureSpend(reservationId) {
     const agent = db.agentInstances.find(item => item.id === reservation.agentInstanceId);
     if (!agent) throw new Error("Agent instance not found");
 
+    const competingReserved = db.billingReservations
+      .filter(item => item.agentInstanceId === reservation.agentInstanceId && item.status === "reserved" && item.id !== reservation.id)
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
     const nextSpend = Number(agent.budgetUsed || 0) + reservation.amount;
-    if (nextSpend > Number(agent.budgetLimit)) throw new Error("Hard budget limit exceeded");
+    if (nextSpend + competingReserved > Number(agent.budgetLimit)) throw new Error("Hard budget limit exceeded");
 
     agent.budgetUsed = nextSpend;
     const task = db.tasks.find(item => item.id === agent.taskId);
