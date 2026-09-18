@@ -1,4 +1,5 @@
 import { id, loadDb, transact } from "./store.js";
+import { redactAuditValue } from "./tenant-security.js";
 
 export const ALERT_SEVERITY = {
   INFO: "info",
@@ -27,7 +28,7 @@ export async function recordObservabilityEvent({
       type,
       severity,
       message,
-      metadata,
+      metadata: redactAuditValue(metadata),
       createdAt: new Date().toISOString()
     };
     db.observabilityEvents.push(event);
@@ -134,7 +135,7 @@ export async function listAlerts({ status = null, severity = null } = {}) {
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
-export async function metricsSnapshot() {
+export async function metricsSnapshot({ persist = true } = {}) {
   const db = await loadDb();
   const counts = {
     queuedJobs: db.jobs.filter(job => ["queued", "retrying"].includes(job.status)).length,
@@ -146,8 +147,10 @@ export async function metricsSnapshot() {
     openAlerts: db.alerts.filter(alert => alert.status === "open").length
   };
 
-  for (const [name, value] of Object.entries(counts)) {
-    await recordMetric({ name, value, unit: "count" });
+  if (persist) {
+    for (const [name, value] of Object.entries(counts)) {
+      await recordMetric({ name, value, unit: "count" });
+    }
   }
 
   return counts;
