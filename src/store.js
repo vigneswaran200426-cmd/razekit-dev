@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const DATA_DIR = path.resolve("data");
+const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
