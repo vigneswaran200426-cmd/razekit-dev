@@ -157,61 +157,6 @@ async function body(req) {
   }
 }
 
-const page = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RazeKit DEV</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:1050px;margin:40px auto;padding:0 20px;background:#f5f7fa;color:#18202a}
-.card{background:#fff;border:1px solid #dce3eb;border-radius:16px;padding:20px;margin:16px 0}
-input,textarea,select,button{font:inherit;width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border:1px solid #cbd5e1;border-radius:10px}
-textarea{min-height:130px}button{background:#172033;color:#fff;border:0;cursor:pointer}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}pre{white-space:pre-wrap;word-break:break-word}
-.status{padding:8px 10px;border-radius:8px;background:#eef2ff;margin:8px 0}
-@media(max-width:700px){.row{grid-template-columns:1fr}}
-</style></head><body>
-<h1>RazeKit DEV</h1>
-<p>Task creation + independent Niomi/Konami agent orchestration.</p>
-<div class="card">
-<h2>Create Task</h2>
-<div class="row">
-<div><label>Type</label><select id="type"><option value="app">App</option><option value="website">Website</option><option value="game">Game</option></select></div>
-<div><label>Title</label><input id="title" placeholder="Build my product"></div>
-</div>
-<label>Request</label><textarea id="request"></textarea>
-<label>Hard maximum budget (USD)</label><input id="budget" type="number" min="1" value="50">
-<button onclick="analyze()">Run Preflight</button>
-<pre id="analysis"></pre>
-<button onclick="createTask()">Authorize + Create Task</button>
-</div>
-<div class="card"><h2>Tasks</h2><button onclick="loadTasks()">Refresh</button><pre id="tasks"></pre></div>
-<div class="card"><h2>Agent Manager</h2><button onclick="loadAgents()">Refresh</button><pre id="agents"></pre></div>
-<script>
-let pf=null;
-async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});const d=await r.json();if(!r.ok)throw new Error(d.error||JSON.stringify(d));return d}
-async function analyze(){
-  try{
-    pf=await api("/api/tasks/analyze",{method:"POST",body:JSON.stringify({taskType:type.value,title:title.value,originalRequest:request.value})});
-    analysis.textContent=JSON.stringify(pf,null,2);
-  }catch(e){analysis.textContent=e.message}
-}
-async function createTask(){
-  try{
-    if(!pf) await analyze();
-    const d=await api("/api/tasks",{method:"POST",body:JSON.stringify({
-      taskType:type.value,title:title.value,originalRequest:request.value,
-      specification:request.value,maxBudget:Number(budget.value),
-      acceptAutonomousExecution:true,requestedTools:pf?.predictedTools||[],
-      acceptanceCriteria:["Task requirements satisfied","Required build/tests pass"]
-    })});
-    alert("Created "+d.task.id+" -> "+d.agent.agentType);
-    loadTasks();loadAgents();
-  }catch(e){alert(e.message)}
-}
-async function loadTasks(){tasks.textContent=JSON.stringify(await api("/api/tasks"),null,2)}
-async function loadAgents(){agents.textContent=JSON.stringify(await api("/internal/agents"),null,2)}
-loadTasks();loadAgents();
-</script></body></html>`;
-
 const server = http.createServer(async (req,res) => {
   try {
     const u = new URL(req.url, "http://" + (req.headers.host || "localhost"));
