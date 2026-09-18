@@ -165,7 +165,7 @@ test("Niomi builds and executes a repository, implementation, test, build and pa
     plan
   });
 
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "completed", result.error || JSON.stringify(result));
   assert.equal(result.plan.steps.at(-1).state, "passed");
 
   const after = await loadDb();
