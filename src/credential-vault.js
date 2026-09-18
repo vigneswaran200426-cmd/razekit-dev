@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { id, loadDb, transact } from "./store.js";
+import { writeAudit } from "./tenant-security.js";
 
 const VAULT_TOKEN_PREFIX = "vaultref_";
 
@@ -17,10 +18,12 @@ export async function registerCredentialReference(agentInstanceId, input) {
     if (!agent) throw new Error("Agent instance not found");
 
     const now = new Date().toISOString();
+    const task = db.tasks.find(item => item.id === agent.taskId);
     const reference = {
       id: id("cred"),
       agentInstanceId,
       taskId: agent.taskId,
+      tenantId: task?.tenantId || "local-tenant",
       provider: input.provider,
       kind: input.kind,
       scopes: [...new Set(input.scopes || [])],
@@ -64,6 +67,15 @@ export async function registerCredentialReference(agentInstanceId, input) {
     }
 
     return sanitizeCredential(reference);
+  }).then(async result => {
+    await writeAudit({
+      tenantId: result.tenantId || "local-tenant",
+      action: "credential.register",
+      resourceType: "credential",
+      resourceId: result.id,
+      metadata: { provider: result.provider, kind: result.kind, scopes: result.scopes }
+    });
+    return result;
   });
 }
 
@@ -82,6 +94,14 @@ export async function revokeCredentialReference(credentialId) {
     credential.status = "revoked";
     credential.revokedAt = new Date().toISOString();
     return sanitizeCredential(credential);
+  }).then(async result => {
+    await writeAudit({
+      tenantId: result.tenantId || "local-tenant",
+      action: "credential.revoke",
+      resourceType: "credential",
+      resourceId: result.id
+    });
+    return result;
   });
 }
 
@@ -199,6 +219,15 @@ export async function issueTemporaryCredential(agentInstanceId, credentialId, { 
     };
     db.secretLeases.push(lease);
     return sanitizeCredentialLease(lease);
+  }).then(async result => {
+    await writeAudit({
+      tenantId: (await loadDb()).tasks.find(item => item.id === result.taskId)?.tenantId || "local-tenant",
+      action: "credential.lease.issue",
+      resourceType: "credential-lease",
+      resourceId: result.id,
+      metadata: { credentialId: result.credentialId, scopes: result.scopes, expiresAt: result.expiresAt }
+    });
+    return result;
   });
 }
 
