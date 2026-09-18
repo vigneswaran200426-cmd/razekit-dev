@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { id, transact, loadDb } from "./store.js";
 import {
   AGENT_STATUS,
@@ -8,28 +10,58 @@ import {
   toolManifestForTask
 } from "./domain.js";
 
+const WORKSPACE_ROOT = path.resolve(process.env.RAZEKIT_WORKSPACE_ROOT || "data/workspaces");
+
+async function provisionWorkspace(taskId) {
+  const workspacePath = path.join(WORKSPACE_ROOT, taskId);
+  await mkdir(workspacePath, { recursive: true });
+  return workspacePath;
+}
+
 export async function spawnAgentForTask(taskId) {
-  return transact(db => {
-    const task = db.tasks.find(x => x.id === taskId);
-    if (!task) throw new Error("Task not found");
-    if (task.status !== TASK_STATUS.READY_FOR_AGENT) {
-      throw new Error("Task must be ready_for_agent before spawning an agent");
+  const existing = await (async () => {
+    const db = await loadDb();
+    return db.agentInstances.find(x => x.taskId === taskId) || null;
+  })();
+  if (existing) return existing;
+
+  const db = await loadDb();
+  const task = db.tasks.find(x => x.id === taskId);
+  if (!task) throw new Error("Task not found");
+  if (task.status !== TASK_STATUS.READY_FOR_AGENT) {
+    throw new Error("Task must be ready_for_agent before spawning an agent");
+  }
+  if (!task.authorization?.autonomousExecution) {
+    throw new Error("Task has not been authorized for autonomous execution");
+  }
+  if (!Number.isFinite(Number(task.maxBudget)) || Number(task.maxBudget) <= 0) {
+    throw new Error("Task has no valid hard budget limit");
+  }
+
+  const workspacePath = await provisionWorkspace(taskId);
+
+  return transact(state => {
+    const duplicate = state.agentInstances.find(x => x.taskId === taskId);
+    if (duplicate) return duplicate;
+
+    const freshTask = state.tasks.find(x => x.id === taskId);
+    if (!freshTask) throw new Error("Task not found");
+    if (freshTask.status !== TASK_STATUS.READY_FOR_AGENT) {
+      throw new Error("Task is no longer ready for agent spawning");
     }
 
-    const existing = db.agentInstances.find(x => x.taskId === taskId);
-    if (existing) return existing;
-
-    const agentType = agentTypeForTask(task.taskType);
+    const agentType = agentTypeForTask(freshTask.taskType);
     const now = new Date().toISOString();
 
     const workspace = {
       id: id("ws"),
       taskId,
       agentInstanceId: null,
-      path: "/isolated-workspaces/" + taskId,
-      status: "provisioning",
+      path: workspacePath,
+      status: "ready",
+      isolated: true,
       createdAt: now,
-      isolated: true
+      stoppedAt: null
     };
 
     const worker = {
@@ -37,16 +69,17 @@ export async function spawnAgentForTask(taskId) {
       taskId,
       agentInstanceId: null,
       runtime: agentType === AGENT_TYPES.KONAMI ? "game-worker" : "app-web-worker",
-      status: WORKER_STATUS.PROVISIONING,
+      status: WORKER_STATUS.READY,
       heartbeatAt: null,
-      createdAt: now
+      createdAt: now,
+      stoppedAt: null
     };
 
     const agent = {
       id: id(agentType),
       taskId,
       agentType,
-      status: AGENT_STATUS.PROVISIONING,
+      status: AGENT_STATUS.READY,
       workspaceId: workspace.id,
       workerId: worker.id,
       modelConfig: {
@@ -55,30 +88,38 @@ export async function spawnAgentForTask(taskId) {
         reasoningReviewer: "gpt-astra"
       },
       toolConfig: {
-        manifest: toolManifestForTask(task.taskType, task.requestedTools || []),
+        manifest: toolManifestForTask(freshTask.taskType, freshTask.requestedTools || []),
         isolation: "task-scoped"
       },
-      budgetLimit: task.maxBudget,
-      budgetUsed: task.actualSpend || 0,
+      budgetLimit: Number(freshTask.maxBudget),
+      budgetUsed: Number(freshTask.actualSpend || 0),
       iteration: 0,
+      executionState: "ready",
       lastHeartbeat: null,
       createdAt: now,
       completedAt: null
     };
 
     workspace.agentInstanceId = agent.id;
-    workspace.status = "ready";
     worker.agentInstanceId = agent.id;
-    worker.status = WORKER_STATUS.READY;
 
-    db.workspaces.push(workspace);
-    db.workers.push(worker);
-    db.agentInstances.push(agent);
+    state.workspaces.push(workspace);
+    state.workers.push(worker);
+    state.agentInstances.push(agent);
 
-    task.agentType = agentType;
-    task.agentInstanceId = agent.id;
-    task.status = TASK_STATUS.QUEUED;
-    task.updatedAt = now;
+    freshTask.agentType = agentType;
+    freshTask.agentInstanceId = agent.id;
+    freshTask.status = TASK_STATUS.QUEUED;
+    freshTask.updatedAt = now;
+
+    state.agentMessages.push({
+      id: id("msg"),
+      agentInstanceId: agent.id,
+      role: "system",
+      content: "Agent instance provisioned.",
+      metadata: { taskScoped: true, agentType, workspacePath },
+      createdAt: now
+    });
 
     return agent;
   });
@@ -93,20 +134,26 @@ export async function startAgent(agentId) {
     const worker = db.workers.find(x => x.id === agent.workerId);
     const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
 
-    if (!task || !worker || !workspace) throw new Error("Agent isolation records are incomplete");
+    if (!task || !worker || !workspace) {
+      throw new Error("Agent isolation records are incomplete");
+    }
     if (![AGENT_STATUS.READY, AGENT_STATUS.PROVISIONING].includes(agent.status)) {
       throw new Error("Agent cannot start from status " + agent.status);
+    }
+    if (!task.authorization?.autonomousExecution) {
+      throw new Error("Task is not authorized for autonomous execution");
     }
 
     const now = new Date().toISOString();
     agent.status = AGENT_STATUS.RUNNING;
+    agent.executionState = "running";
     agent.lastHeartbeat = now;
     agent.iteration += 1;
 
     worker.status = WORKER_STATUS.RUNNING;
     worker.heartbeatAt = now;
-    workspace.status = "active";
 
+    workspace.status = "active";
     task.status = TASK_STATUS.RUNNING;
     task.updatedAt = now;
 
@@ -114,7 +161,7 @@ export async function startAgent(agentId) {
       id: id("msg"),
       agentInstanceId: agent.id,
       role: "system",
-      content: "Agent " + agent.agentType + " started for task " + task.id + ".",
+      content: "Agent " + agent.agentType + " started.",
       metadata: {
         taskScoped: true,
         budgetLimit: agent.budgetLimit,
@@ -125,6 +172,24 @@ export async function startAgent(agentId) {
 
     return agent;
   });
+}
+
+export async function processReadyTasks() {
+  const db = await loadDb();
+  const ready = db.tasks.filter(task => task.status === TASK_STATUS.READY_FOR_AGENT && task.authorization?.autonomousExecution);
+  const started = [];
+
+  for (const task of ready) {
+    const agent = await spawnAgentForTask(task.id);
+    const current = await getAgent(agent.id);
+    if (current?.status === AGENT_STATUS.READY) {
+      started.push(await startAgent(agent.id));
+    } else {
+      started.push(agent);
+    }
+  }
+
+  return started;
 }
 
 export async function heartbeatAgent(agentId, progress = {}) {
@@ -167,7 +232,71 @@ export async function heartbeatAgent(agentId, progress = {}) {
   });
 }
 
-export async function cancelAgent(agentId, reason = "Cancelled by user") {
+export async function addAgentMessage(agentId, role, content, metadata = {}) {
+  if (!content?.trim()) throw new Error("Message content is required");
+  if (!["user", "agent", "system"].includes(role)) throw new Error("Invalid message role");
+
+  return transact(db => {
+    const agent = db.agentInstances.find(x => x.id === agentId);
+    if (!agent) throw new Error("Agent instance not found");
+
+    const message = {
+      id: id("msg"),
+      agentInstanceId: agent.id,
+      role,
+      content: content.trim(),
+      metadata,
+      createdAt: new Date().toISOString()
+    };
+
+    db.agentMessages.push(message);
+    return message;
+  });
+}
+
+export async function recordSpend(agentId, amount, reason = "billable action") {
+  const spend = Number(amount);
+  if (!Number.isFinite(spend) || spend < 0) throw new Error("Spend amount must be a non-negative number");
+
+  return transact(db => {
+    const agent = db.agentInstances.find(x => x.id === agentId);
+    if (!agent) throw new Error("Agent instance not found");
+
+    const nextSpend = Number(agent.budgetUsed || 0) + spend;
+    if (nextSpend > Number(agent.budgetLimit)) {
+      throw new Error("Hard budget limit exceeded");
+    }
+
+    agent.budgetUsed = nextSpend;
+    const task = db.tasks.find(x => x.id === agent.taskId);
+    if (task) {
+      task.actualSpend = nextSpend;
+      task.updatedAt = new Date().toISOString();
+    }
+
+    const event = {
+      id: id("spend"),
+      agentInstanceId: agent.id,
+      amount: spend,
+      reason,
+      totalAfter: nextSpend,
+      createdAt: new Date().toISOString()
+    };
+
+    db.agentMessages.push({
+      id: id("msg"),
+      agentInstanceId: agent.id,
+      role: "system",
+      content: "Spend recorded: " + spend,
+      metadata: { billingEvent: event },
+      createdAt: event.createdAt
+    });
+
+    return event;
+  });
+}
+
+async function terminalTransition(agentId, status, taskStatus, reason) {
   return transact(db => {
     const agent = db.agentInstances.find(x => x.id === agentId);
     if (!agent) throw new Error("Agent instance not found");
@@ -177,12 +306,20 @@ export async function cancelAgent(agentId, reason = "Cancelled by user") {
     const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
     const now = new Date().toISOString();
 
-    agent.status = AGENT_STATUS.CANCELLED;
+    agent.status = status;
+    agent.executionState = "stopped";
     agent.completedAt = now;
-    if (worker) worker.status = WORKER_STATUS.STOPPED;
-    if (workspace) workspace.status = "stopped";
+
+    if (worker) {
+      worker.status = WORKER_STATUS.STOPPED;
+      worker.stoppedAt = now;
+    }
+    if (workspace) {
+      workspace.status = "stopped";
+      workspace.stoppedAt = now;
+    }
     if (task) {
-      task.status = TASK_STATUS.CANCELLED;
+      task.status = taskStatus;
       task.updatedAt = now;
     }
 
@@ -199,36 +336,16 @@ export async function cancelAgent(agentId, reason = "Cancelled by user") {
   });
 }
 
+export async function cancelAgent(agentId, reason = "Cancelled by user") {
+  return terminalTransition(agentId, AGENT_STATUS.CANCELLED, TASK_STATUS.CANCELLED, reason);
+}
+
 export async function completeAgent(agentId, resultSummary = "Task completed") {
-  return transact(db => {
-    const agent = db.agentInstances.find(x => x.id === agentId);
-    if (!agent) throw new Error("Agent instance not found");
+  return terminalTransition(agentId, AGENT_STATUS.COMPLETED, TASK_STATUS.COMPLETED, resultSummary);
+}
 
-    const task = db.tasks.find(x => x.id === agent.taskId);
-    const worker = db.workers.find(x => x.id === agent.workerId);
-    const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
-    const now = new Date().toISOString();
-
-    agent.status = AGENT_STATUS.COMPLETED;
-    agent.completedAt = now;
-    if (worker) worker.status = WORKER_STATUS.STOPPED;
-    if (workspace) workspace.status = "stopped";
-    if (task) {
-      task.status = TASK_STATUS.COMPLETED;
-      task.updatedAt = now;
-    }
-
-    db.agentMessages.push({
-      id: id("msg"),
-      agentInstanceId: agent.id,
-      role: "system",
-      content: resultSummary,
-      metadata: { terminal: true },
-      createdAt: now
-    });
-
-    return agent;
-  });
+export async function failAgent(agentId, reason = "Agent failed") {
+  return terminalTransition(agentId, AGENT_STATUS.FAILED, TASK_STATUS.FAILED, reason);
 }
 
 export async function listAgents() {
