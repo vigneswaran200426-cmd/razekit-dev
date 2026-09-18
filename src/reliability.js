@@ -401,6 +401,13 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
 
     const agentType = agentTypeForTask(freshTask.taskType);
     const now = new Date().toISOString();
+    const previousAgent = previousAgentId
+      ? db.agentInstances.find(x => x.id === previousAgentId) || null
+      : null;
+    const previousWorker = previousAgent?.workerId
+      ? db.workers.find(x => x.id === previousAgent.workerId) || null
+      : null;
+
     const workspace = {
       id: id("ws"),
       taskId: task.id,
@@ -424,12 +431,12 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
       leaseId: null,
       leaseOwner: null,
       leaseExpiresAt: null,
-      checkpoint: db.workers.find(x => x.id === oldAgentIdForWorkspace(db, previousAgentId))?.checkpoint || null,
-      checkpointAt: db.workers.find(x => x.id === oldAgentIdForWorkspace(db, previousAgentId))?.checkpointAt || null,
+      checkpoint: previousWorker?.checkpoint || null,
+      checkpointAt: previousWorker?.checkpointAt || null,
       createdAt: now,
       stoppedAt: null,
       recreated: true,
-      previousWorkerId: task.agentInstanceId ? db.agentInstances.find(x => x.id === previousAgentId)?.workerId || null : null
+      previousWorkerId: previousWorker?.id || null
     };
     const agent = {
       id: id(agentType),
@@ -486,10 +493,6 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
 
     return agent;
   });
-}
-
-function oldAgentIdForWorkspace(db, agentId) {
-  return agentId || null;
 }
 
 function assertJobLease(job, leaseId) {
