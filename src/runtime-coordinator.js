@@ -2,13 +2,20 @@ import { processReadyTasks, heartbeatAgent, completeAgent, failAgent } from "./a
 import { recoverExpiredJobs, recoverExpiredWorkers } from "./reliability.js";
 import { recoverProductionAssignments } from "./production-runtime.js";
 import { evaluateInfrastructureAlerts, recordObservabilityEvent } from "./observability.js";
+import { advanceAllAgents } from "./autonomous-loop.js";
 
 export class RuntimeCoordinator {
-  constructor({tickMs = Number(process.env.RAZEKIT_TICK_MS || 15000)} = {}) {
+  constructor({
+    tickMs = Number(process.env.RAZEKIT_TICK_MS || 15000),
+    orchestrator = null
+  } = {}) {
     if (!Number.isFinite(tickMs) || tickMs < 100) {
       throw new Error("tickMs must be at least 100 milliseconds");
     }
     this.tickMs = tickMs;
+    // Without an orchestrator the coordinator still recovers workers and starts
+    // agents; it just cannot drive them. That is the shape the tests use.
+    this.orchestrator = orchestrator;
     this.timer = null;
   }
 
@@ -19,9 +26,14 @@ export class RuntimeCoordinator {
       const productionRecovery = await recoverProductionAssignments();
       const alerts = await evaluateInfrastructureAlerts();
       const agents = await processReadyTasks();
+      const advanced = this.orchestrator
+        ? await advanceAllAgents({ orchestrator: this.orchestrator })
+        : [];
       return {
         ok: true,
         started: agents.length,
+        advanced: advanced.length,
+        stages: advanced.map(item => item.stage),
         recoveredWorkers: workerRecovery.length,
         recoveredJobs: jobRecovery.length,
         recoveredProductionAssignments: productionRecovery.length,

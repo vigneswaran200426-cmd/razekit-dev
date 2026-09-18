@@ -26,7 +26,7 @@ import {
 } from "./worker-runtime.js";
 import { ModelAdapterRegistry } from "./model-runtime.js";
 import { ModelOrchestrator } from "./model-orchestrator.js";
-import { DeterministicFableAdapter, DeterministicAstraAdapter } from "./testing-model-adapters.js";
+import { configureModelRegistry } from "./model-providers.js";
 import { listModelSessions } from "./model-sessions.js";
 import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { listTools, requiredScopesForTools } from "./tool-registry.js";
@@ -63,6 +63,7 @@ import {
   getCheckpoint as getDurableCheckpoint
 } from "./reliability.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
+import { advanceAgent, advanceAllAgents } from "./autonomous-loop.js";
 import { verifyTask, latestVerification, verificationSummary } from "./verification.js";
 import {
   buildAppWebExecutionPlan,
@@ -124,15 +125,11 @@ import {
 
 
 const PORT = Number(process.env.PORT || 3000);
-const runtimeCoordinator = createRuntimeCoordinator();
 const modelRegistry = new ModelAdapterRegistry();
-
-if (process.env.RAZEKIT_ENABLE_TEST_MODEL_ADAPTERS === "true") {
-  modelRegistry.register("fable", new DeterministicFableAdapter());
-  modelRegistry.register("astra", new DeterministicAstraAdapter());
-}
+const modelConfiguration = configureModelRegistry(modelRegistry);
 
 const modelOrchestrator = new ModelOrchestrator({ registry: modelRegistry });
+const runtimeCoordinator = createRuntimeCoordinator({ orchestrator: modelOrchestrator });
 const toolAdapterRegistry = new ToolAdapterRegistry();
 
 if (process.env.RAZEKIT_ENABLE_TEST_TOOL_ADAPTERS === "true") {
@@ -164,7 +161,28 @@ const server = http.createServer(async (req,res) => {
     const principal = principalFromHeaders(req.headers);
 
     if (req.method === "GET" && p === "/health") {
-      return json(res,200,{ok:true,service:"razekit-dev",time:new Date().toISOString()});
+      return json(res,200,{
+        ok:true,
+        service:"razekit-dev",
+        time:new Date().toISOString(),
+        // Names the configured providers and models so an operator can tell a
+        // deterministic deployment from a real one. Never echoes a key.
+        models:modelConfiguration
+      });
+    }
+
+    // Drives the autonomous loop on demand. The coordinator already ticks on a
+    // timer; these exist so an integration test, or an operator watching a
+    // stuck task, can step the machine deliberately instead of waiting.
+    if (req.method === "POST" && p === "/internal/loop/tick") {
+      return json(res,200,await advanceAllAgents({ orchestrator: modelOrchestrator }));
+    }
+
+    const advanceMatch=p.match(/^\/internal\/agents\/([^/]+)\/advance$/);
+    if(req.method==="POST"&&advanceMatch){
+      const agent=await getAgent(advanceMatch[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await advanceAgent(advanceMatch[1],{ orchestrator: modelOrchestrator }));
     }
 
     if (req.method === "GET" && p === "/") {
