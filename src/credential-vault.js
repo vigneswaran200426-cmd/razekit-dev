@@ -84,3 +84,50 @@ export async function resolveCredentialReference(agentInstanceId, provider, requ
   if (!match) return null;
   return sanitizeCredential(match);
 }
+
+export async function requestCredentialReference(agentInstanceId, provider, scopes = [], reason = "Credential required for tool execution") {
+  if (!provider?.trim()) throw new Error("Credential provider is required");
+  const normalizedScopes = [...new Set(scopes.filter(Boolean))];
+
+  return transact(db => {
+    const agent = db.agentInstances.find(x => x.id === agentInstanceId);
+    if (!agent) throw new Error("Agent instance not found");
+
+    const existing = db.credentialRequests.find(x =>
+      x.agentInstanceId === agentInstanceId &&
+      x.provider === provider &&
+      x.status === "pending" &&
+      JSON.stringify(x.scopes) === JSON.stringify(normalizedScopes)
+    );
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+    const request = {
+      id: id("creq"),
+      agentInstanceId,
+      taskId: agent.taskId,
+      provider,
+      scopes: normalizedScopes,
+      reason,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const task = db.tasks.find(x => x.id === agent.taskId);
+    agent.status = "waiting_user";
+    agent.executionState = "waiting_user";
+    if (task) {
+      task.status = "waiting_user";
+      task.updatedAt = now;
+    }
+
+    db.credentialRequests.push(request);
+    return request;
+  });
+}
+
+export async function listCredentialRequests(agentInstanceId) {
+  const db = await loadDb();
+  return db.credentialRequests.filter(x => x.agentInstanceId === agentInstanceId && x.status === "pending");
+}
