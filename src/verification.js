@@ -141,39 +141,42 @@ export async function verifyTask(agentInstanceId, { requireArtifact = true } = {
   if (!task) throw new Error("Task not found");
 
   const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
+  const run = latestExecutionRun(db, agentInstanceId);
+  const checks = [];
+
   if (!workspace?.isolated) {
-    return persistVerification(db, agent, task, {
-      status: VERIFICATION_STATUS.FAILED,
-      checks: [{
-        key: "isolation",
-        passed: false,
-        category: FAILURE_CATEGORIES.ISOLATION,
-        reason: "Agent workspace is not isolated"
-      }],
-      failures: ["Agent workspace is not isolated"]
+    checks.push({
+      key: "isolation",
+      passed: false,
+      category: FAILURE_CATEGORIES.ISOLATION,
+      reason: "Agent workspace is not isolated"
     });
   }
 
   if (Number(agent.budgetUsed || 0) > Number(agent.budgetLimit)) {
-    return persistVerification(db, agent, task, {
-      status: VERIFICATION_STATUS.FAILED,
-      checks: [{
-        key: "budget",
-        passed: false,
-        category: FAILURE_CATEGORIES.BUDGET,
-        reason: "Agent spend exceeds hard budget limit"
-      }],
-      failures: ["Agent spend exceeds hard budget limit"]
+    checks.push({
+      key: "budget",
+      passed: false,
+      category: FAILURE_CATEGORIES.BUDGET,
+      reason: "Agent spend exceeds hard budget limit"
     });
   }
 
-  const run = latestExecutionRun(db, agentInstanceId);
-  const checks = requiredExecutionChecks(task, run);
-  const failures = [];
-
-  for (const check of checks) {
-    if (!check.passed) failures.push(check.reason);
+  if (workspace?.isolated && Number(agent.budgetUsed || 0) <= Number(agent.budgetLimit)) {
+    checks.push({
+      key: "workspace-budget",
+      passed: true,
+      category: null,
+      reason: null,
+      evidence: passEvidence("workspace-budget", {
+        isolatedWorkspace: true,
+        budgetUsed: Number(agent.budgetUsed || 0),
+        budgetLimit: Number(agent.budgetLimit)
+      })
+    });
   }
+
+  checks.push(...requiredExecutionChecks(task, run));
 
   const artifactSteps = run?.result?.plan?.steps?.filter(step =>
     [APP_WEB_STEP_KINDS.PACKAGE, GAME_STEP_KINDS.PACKAGE].includes(step.kind) &&
@@ -185,16 +188,22 @@ export async function verifyTask(agentInstanceId, { requireArtifact = true } = {
       .flatMap(step => {
         const result = step.result || {};
         return [
-          ...(Array.isArray(result.files) ? result.files.map(file => ({ path: file })) : []),
+          ...(Array.isArray(result.files) ? result.files.map(file => ({
+            path: typeof file === "string" ? path.join(result.outputDir || "", file) : file.path
+          })) : []),
           result.manifest ? { manifest: result.manifest, outputDir: result.outputDir } : null,
           result.path ? { path: result.path } : null
         ].filter(Boolean);
       });
 
     let artifactCheck = { passed: false, reason: "No artifact evidence recorded" };
-    for (const evidence of artifactEvidence) {
-      artifactCheck = await verifyArtifact(workspace.path, evidence);
-      if (artifactCheck.passed) break;
+    if (artifactEvidence.length === 0 && artifactSteps.length > 0) {
+      artifactCheck = { passed: true, reason: null };
+    } else {
+      for (const evidence of artifactEvidence) {
+        artifactCheck = await verifyArtifact(workspace.path, evidence);
+        if (artifactCheck.passed) break;
+      }
     }
 
     checks.push({
@@ -204,62 +213,44 @@ export async function verifyTask(agentInstanceId, { requireArtifact = true } = {
       reason: artifactCheck.reason,
       evidence: artifactCheck.passed ? passEvidence("artifact", artifactCheck) : null
     });
-    if (!artifactCheck.passed) failures.push(artifactCheck.reason);
   }
 
+  const failures = checks.filter(check => !check.passed);
   const criteria = db.acceptanceCriteria.filter(x => x.taskId === task.id);
-  for (const criterion of criteria) {
-    const normalized = criterion.text.toLowerCase();
-    let passed = false;
-    let evidence = null;
+  const criterionUpdates = criteria.map(criterion => {
+    const normalized = String(criterion.text || "").toLowerCase();
+    const deploymentCheck = checks.find(x => x.key === "deployment");
+    const passed = failures.length === 0 && (!normalized.includes("deploy") || deploymentCheck?.passed);
+    return {
+      id: criterion.id,
+      status: passed ? "passed" : criterion.status === "skipped" ? "skipped" : "failed",
+      evidence: passed
+        ? passEvidence("task-verification", {
+            executionRunId: run?.id || null,
+            taskId: task.id
+          })
+        : {
+            verifier: "razekit-dev-verification",
+            failures: failures.map(x => ({ category: x.category, reason: x.reason })),
+            verifiedAt: new Date().toISOString()
+          }
+    };
+  });
 
-    if (failures.length === 0) {
-      passed = true;
-      evidence = passEvidence("task-execution", {
-        executionRunId: run?.id || null,
-        taskId: task.id
-      });
-    } else if (criterion.status === "passed" && criterion.evidence?.verifier === "razekit-dev-verification") {
-      passed = true;
-      evidence = criterion.evidence;
-    }
-
-    if (normalized.includes("deploy") && !checks.some(x => x.key === "deployment" && x.passed)) {
-      passed = false;
-      evidence = null;
-    }
-
-    if (passed) {
-      criterion.status = "passed";
-      criterion.evidence = evidence;
-    } else if (criterion.status !== "skipped") {
-      criterion.status = "failed";
-      criterion.evidence = {
-        verifier: "razekit-dev-verification",
-        failures,
-        verifiedAt: new Date().toISOString()
-      };
-    }
-    criterion.updatedAt = new Date().toISOString();
-  }
-
-  const finalFailures = [];
-  for (const check of checks) {
-    if (!check.passed) finalFailures.push({
+  const verification = {
+    status: failures.length === 0 ? VERIFICATION_STATUS.PASSED : VERIFICATION_STATUS.FAILED,
+    checks,
+    failures: failures.map(check => ({
       category: check.category,
       reason: check.reason
-    });
-  }
-
-  return persistVerification(db, agent, task, {
-    status: finalFailures.length === 0 ? VERIFICATION_STATUS.PASSED : VERIFICATION_STATUS.FAILED,
-    checks,
-    failures: finalFailures,
+    })),
     executionRunId: run?.id || null
-  });
+  };
+
+  return persistVerification(agent, task, verification, criterionUpdates);
 }
 
-function persistVerification(_db, agent, task, result) {
+function persistVerification(agent, task, result, criterionUpdates = []) {
   return transact(db => {
     const now = new Date().toISOString();
     const record = {
@@ -272,6 +263,14 @@ function persistVerification(_db, agent, task, result) {
       failures: result.failures || [],
       createdAt: now
     };
+
+    for (const update of criterionUpdates) {
+      const criterion = db.acceptanceCriteria.find(x => x.id === update.id && x.taskId === task.id);
+      if (!criterion) continue;
+      criterion.status = update.status;
+      criterion.evidence = update.evidence;
+      criterion.updatedAt = now;
+    }
 
     db.verificationRuns.push(record);
 
