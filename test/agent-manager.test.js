@@ -88,10 +88,21 @@ test("hard budget blocks spend beyond the configured ceiling", async () => {
   assert.equal((await getAgent(agent.id)).budgetUsed, 7);
 });
 
-test("completion stops the task worker state", async () => {
+test("completion requires acceptance criteria to pass", async () => {
   const task = await makeTask("app");
+  const criterion = { id: id("ac"), taskId: task.id, text: "Build passes", status: "pending" };
+  await transact(db => db.acceptanceCriteria.push(criterion));
+
   const agent = await spawnAgentForTask(task.id);
   await startAgent(agent.id);
+
+  await assert.rejects(
+    () => completeAgent(agent.id, "Should not complete yet"),
+    /acceptance criteria pass/
+  );
+
+  const { setAcceptanceCriterion } = await import("../src/agent-manager.js");
+  await setAcceptanceCriterion(task.id, criterion.id, "passed", "Test passed");
   const completed = await completeAgent(agent.id, "Test completed");
 
   assert.equal(completed.status, AGENT_STATUS.COMPLETED);
