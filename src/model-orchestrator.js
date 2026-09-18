@@ -1,10 +1,15 @@
 import { id, transact, loadDb } from "./store.js";
-import { recordSpend } from "./agent-manager.js";
+import { getAgent, recordSpend } from "./agent-manager.js";
 import { readBlackboard, writeBlackboard, snapshotBlackboard } from "./blackboard.js";
-import { listModelSessions, provisionModelSessions, recordModelUsage, updateModelSession } from "./model-sessions.js";
+import {
+  listModelSessions,
+  provisionModelSessions,
+  recordModelUsage,
+  appendModelMessage,
+  updateModelSession
+} from "./model-sessions.js";
 import {
   MODEL_ROLES,
-  MODEL_PROVIDERS,
   callModel,
   ModelRuntimeError
 } from "./model-runtime.js";
@@ -36,6 +41,15 @@ function buildTaskContext(task, agent, blackboard, recentMessages) {
 
 function estimateContextSize(context) {
   return JSON.stringify(context).length;
+}
+
+function compactContext(context) {
+  return {
+    task: context.task,
+    agent: context.agent,
+    blackboard: context.blackboard.slice(-20),
+    recentMessages: context.recentMessages.slice(-5)
+  };
 }
 
 export class ModelOrchestrator {
@@ -89,28 +103,34 @@ export class ModelOrchestrator {
       return { run, result: null };
     }
 
-    const context = await this.buildContext(agent, run);
+    let context = await this.buildContext(agent, run);
     if (estimateContextSize(context) > MAX_CONTEXT_CHARS) {
-      await snapshotBlackboard(agent.id, "context_compaction");
+      const snapshot = await snapshotBlackboard(agent.id, "context_compaction");
       await transact(db => {
         const item = db.orchestrationRuns.find(x => x.id === run.id);
         item.contextVersion += 1;
         item.contextCompactions += 1;
         item.updatedAt = new Date().toISOString();
+        item.lastSnapshotId = snapshot.id;
       });
       run = await this.getRun(agent.id);
+      context = compactContext(context);
     }
 
-    if (run.phase === null || run.phase === "reviewing") {
+    if (run.phase === null || run.phase === ORCHESTRATION_STATUS.REVIEWING) {
       return this.runPlanning(agent, run, context);
     }
 
-    if (run.phase === "planning") {
+    if (run.phase === ORCHESTRATION_STATUS.PLANNING) {
       return this.runImplementation(agent, run, context);
     }
 
-    if (run.phase === "implementing") {
+    if (run.phase === ORCHESTRATION_STATUS.IMPLEMENTING) {
       return this.runReview(agent, run, context);
+    }
+
+    if (run.status === ORCHESTRATION_STATUS.BLOCKED && run.phase) {
+      return this.runCurrentPhase(agent, run, context);
     }
 
     throw new Error("Unknown orchestration phase: " + run.phase);
@@ -122,10 +142,8 @@ export class ModelOrchestrator {
       run,
       phase: ORCHESTRATION_STATUS.PLANNING,
       sessionRole: MODEL_ROLES.PLANNER,
-      provider: MODEL_PROVIDERS.ASTRA,
       prompt: "Create or refine the execution plan. Produce concrete next implementation steps.",
-      context,
-      nextPhase: ORCHESTRATION_STATUS.PLANNING
+      context
     });
   }
 
@@ -135,10 +153,8 @@ export class ModelOrchestrator {
       run,
       phase: ORCHESTRATION_STATUS.IMPLEMENTING,
       sessionRole: MODEL_ROLES.IMPLEMENTER,
-      provider: MODEL_PROVIDERS.FABLE,
       prompt: "Implement the current execution plan using the task workspace and approved tools.",
-      context,
-      nextPhase: ORCHESTRATION_STATUS.IMPLEMENTING
+      context
     });
   }
 
@@ -148,39 +164,54 @@ export class ModelOrchestrator {
       run,
       phase: ORCHESTRATION_STATUS.REVIEWING,
       sessionRole: MODEL_ROLES.REVIEWER,
-      provider: MODEL_PROVIDERS.ASTRA,
       prompt: "Review the implementation against the task and acceptance criteria. Decide pass, revise, or block.",
-      context,
-      nextPhase: ORCHESTRATION_STATUS.REVIEWING
+      context
     });
   }
 
-  async runModelPhase({ agent, run, phase, sessionRole, provider, prompt, context }) {
+  async runCurrentPhase(agent, run, context) {
+    if (run.phase === ORCHESTRATION_STATUS.PLANNING) return this.runPlanning(agent, run, context);
+    if (run.phase === ORCHESTRATION_STATUS.IMPLEMENTING) return this.runImplementation(agent, run, context);
+    if (run.phase === ORCHESTRATION_STATUS.REVIEWING) return this.runReview(agent, run, context);
+    throw new Error("Blocked orchestration has no retryable phase");
+  }
+
+  async runModelPhase({ agent, run, phase, sessionRole, prompt, context }) {
     const sessions = await listModelSessions(agent.id);
     const session = sessions.find(s => {
-      if (sessionRole === MODEL_ROLES.IMPLEMENTER) return s.provider === MODEL_PROVIDERS.FABLE;
-      return s.provider === MODEL_PROVIDERS.ASTRA;
+      if (sessionRole === MODEL_ROLES.IMPLEMENTER) return s.role === "implementer";
+      return s.role === "planner_reviewer";
     });
     if (!session) throw new Error("Required model session is not provisioned");
 
-    await updateModelSession(session.id, { state: "running", lastError: null });
+    await updateModelSession(session.id, {
+      state: "running",
+      lastError: null,
+      contextVersion: run.contextVersion
+    });
 
     await transact(db => {
       const item = db.orchestrationRuns.find(x => x.id === run.id);
       item.phase = phase;
       item.status = phase;
       item.updatedAt = new Date().toISOString();
-      return item;
     });
 
     const request = {
-      provider,
+      provider: session.provider,
       model: session.model,
       role: sessionRole,
       system: "You are part of an isolated autonomous development agent. Do not assume access to resources outside the task.",
       prompt,
       context
     };
+
+    await appendModelMessage(
+      session.id,
+      "user",
+      prompt,
+      { phase, contextVersion: run.contextVersion }
+    );
 
     let response;
     try {
@@ -192,18 +223,43 @@ export class ModelOrchestrator {
       });
       await transact(db => {
         const item = db.orchestrationRuns.find(x => x.id === run.id);
-        item.status = error instanceof ModelRuntimeError && error.retryable ? ORCHESTRATION_STATUS.BLOCKED : ORCHESTRATION_STATUS.FAILED;
+        item.status = error instanceof ModelRuntimeError && error.retryable
+          ? ORCHESTRATION_STATUS.BLOCKED
+          : ORCHESTRATION_STATUS.FAILED;
         item.lastError = error.message;
         item.updatedAt = new Date().toISOString();
-        return item;
       });
       throw error;
     }
 
     const usage = response.usage || {};
     await recordModelUsage(session.id, usage);
-    if (Number(usage.cost || 0) > 0) {
-      await recordSpend(agent.id, Number(usage.cost), "model:" + provider + ":" + session.model);
+
+    if (response.output || response.text) {
+      await appendModelMessage(
+        session.id,
+        "assistant",
+        String(response.output || response.text),
+        { phase, model: session.model }
+      );
+    }
+
+    try {
+      if (Number(usage.cost || 0) > 0) {
+        await recordSpend(agent.id, Number(usage.cost), "model:" + session.provider + ":" + session.model);
+      }
+    } catch (error) {
+      await updateModelSession(session.id, {
+        state: "budget_blocked",
+        lastError: error.message
+      });
+      await transact(db => {
+        const item = db.orchestrationRuns.find(x => x.id === run.id);
+        item.status = ORCHESTRATION_STATUS.BLOCKED;
+        item.lastError = error.message;
+        item.updatedAt = new Date().toISOString();
+      });
+      throw error;
     }
 
     await updateModelSession(session.id, {
@@ -211,10 +267,10 @@ export class ModelOrchestrator {
       lastError: null
     });
 
-    await writeBlackboard(agent.id, "last." + phase + ".response", response.output || response.text || response, provider);
-    if (response.plan) await writeBlackboard(agent.id, "execution.plan", response.plan, provider);
-    if (response.implementation) await writeBlackboard(agent.id, "implementation.result", response.implementation, provider);
-    if (response.review) await writeBlackboard(agent.id, "review.result", response.review, provider);
+    await writeBlackboard(agent.id, "last." + phase + ".response", response.output || response.text || response, session.provider);
+    if (response.plan) await writeBlackboard(agent.id, "execution.plan", response.plan, session.provider);
+    if (response.implementation) await writeBlackboard(agent.id, "implementation.result", response.implementation, session.provider);
+    if (response.review) await writeBlackboard(agent.id, "review.result", response.review, session.provider);
 
     const reviewDecision = response.review?.decision;
     const shouldComplete = phase === ORCHESTRATION_STATUS.REVIEWING && reviewDecision === REVIEW_DECISIONS.PASS;
@@ -235,14 +291,11 @@ export class ModelOrchestrator {
         item.cycle += 1;
       } else if (phase === ORCHESTRATION_STATUS.PLANNING) {
         item.status = ORCHESTRATION_STATUS.IMPLEMENTING;
-        item.phase = ORCHESTRATION_STATUS.PLANNING;
       } else if (phase === ORCHESTRATION_STATUS.IMPLEMENTING) {
         item.status = ORCHESTRATION_STATUS.REVIEWING;
-        item.phase = ORCHESTRATION_STATUS.IMPLEMENTING;
       }
 
       item.updatedAt = new Date().toISOString();
-      return item;
     });
 
     const updatedRun = await this.getRun(agent.id);
@@ -262,7 +315,7 @@ export class ModelOrchestrator {
     };
   }
 
-  async buildContext(agent, run) {
+  async buildContext(agent) {
     const db = await loadDb();
     const task = db.tasks.find(x => x.id === agent.taskId);
     const messages = db.agentMessages
@@ -279,8 +332,9 @@ export class ModelOrchestrator {
   }
 
   async getState(agentId) {
+    const run = await this.getRun(agentId);
     return {
-      run: await this.getRun(agentId),
+      run,
       sessions: await listModelSessions(agentId),
       blackboard: await readBlackboard(agentId)
     };
