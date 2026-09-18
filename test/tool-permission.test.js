@@ -230,7 +230,74 @@ test("missing adapter is audited instead of escaping silently", async () => {
   assert.equal(result.audit.status, "adapter_unavailable");
 });
 
-test.after(async () => {
+
+test("missing credentials create a request and registration fulfills it", async () => {
+  const agent = await makeTask("Credential Request", ["database"], requiredScopesForTools(["database"]));
+  const registry = new ToolAdapterRegistry();
+  registry.register("database", new EchoToolAdapter());
+  const broker = new ToolBroker({ registry });
+
+  const first = await broker.invoke({
+    agentInstanceId: agent.id,
+    toolKey: "database",
+    input: { query: "SELECT 1" }
+  });
+
+  assert.equal(first.allowed, false);
+  assert.equal(first.audit.status, "credential_required");
+  assert.ok(first.credentialRequest);
+
+  const requestsBefore = (await import("../src/credential-vault.js")).listCredentialRequests;
+  const pendingBefore = await requestsBefore(agent.id);
+  assert.equal(pendingBefore.length, 1);
+
+  await registerCredentialReference(agent.id, {
+    provider: "database",
+    kind: "api-token",
+    scopes: ["database"]
+  });
+
+  const pendingAfter = await requestsBefore(agent.id);
+  assert.equal(pendingAfter.length, 0);
+
+  const db = await loadDb();
+  const resumed = db.agentInstances.find(x => x.id === agent.id);
+  assert.equal(resumed.status, AGENT_STATUS.RUNNING);
+});
+
+test("multiple pending permissions keep the agent waiting until all are resolved", async () => {
+  const agent = await makeTask("Multiple Permissions", ["filesystem"], ["workspace:read"]);
+
+  const first = await authorizeToolCall(agent.id, "filesystem", ["workspace:write"]);
+  await authorizeToolCall(agent.id, "filesystem", ["workspace:read"]).catch(() => {});
+
+  await (async () => {
+    const db = await loadDb();
+    const existing = db.permissionRequests.find(x => x.id === first.permissionRequest.id);
+    if (existing) existing.status = "pending";
+    const second = {
+      id: id("preq"),
+      agentInstanceId: agent.id,
+      taskId: agent.taskId,
+      toolKey: "filesystem",
+      scopes: ["process:execute"],
+      reason: "Additional test permission",
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      expiresAt: null
+    };
+    db.permissionRequests.push(second);
+  })();
+
+  const { approvePermission: approve } = await import("../src/permission-broker.js");
+  await approve(first.permissionRequest.id);
+
+  const dbAfter = await loadDb();
+  const stillWaiting = dbAfter.agentInstances.find(x => x.id === agent.id);
+  assert.equal(stillWaiting.status, AGENT_STATUS.WAITING_USER);
+});
+\ntest.after(async () => {
   await rm(dataDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
 });
