@@ -193,6 +193,7 @@ export async function claimProductionJob(poolId, ownerId, leaseMs = 30_000) {
   const lease = Math.max(1000, Number(leaseMs));
 
   return transact(db => {
+    const now = Date.now();
     const pool = db.workerPools.find(item => item.id === poolId);
     if (!pool) throw new Error("Worker pool not found");
     if (pool.status !== "active") throw new Error("Worker pool is not active");
@@ -214,7 +215,6 @@ export async function claimProductionJob(poolId, ownerId, leaseMs = 30_000) {
     );
     if (!worker) return null;
 
-    const now = Date.now();
     const availableJob = db.jobs
       .filter(job =>
         [JOB_STATUS.QUEUED, JOB_STATUS.RETRYING].includes(job.status) &&
