@@ -18,7 +18,8 @@ const {
   ensureTenant,
   assertTenantActive,
   assertTaskAccess,
-  writeAudit
+  writeAudit,
+  issuePrincipalToken
 } = await import("../src/tenant-security.js");
 const {
   enforceTenantLimit,
@@ -82,6 +83,19 @@ async function makeTask({ tenantId = "tenant-a", userId = "user-a", budget = 20 
   await startAgent(agent.id);
   return { task, agent };
 }
+
+test("signed principal mode rejects forged tenant headers", async () => {
+  const secret = "principal-test-secret";
+  const token = issuePrincipalToken({ tenantId: "signed-tenant", userId: "signed-user", ttlMs: 60_000 }, secret);
+
+  process.env.RAZEKIT_REQUIRE_SIGNED_PRINCIPAL = "true";
+  process.env.RAZEKIT_PRINCIPAL_SECRET = secret;
+
+  assert.deepEqual(
+    principalFromHeaders({ "x-razekit-principal": token, "x-razekit-tenant-id": "forged-tenant" }),
+    { tenantId: "signed-tenant", userId: "signed-user", requestId: assert.any ? undefined : undefined }
+  );
+});
 
 test("task access is tenant and user scoped", async () => {
   const { task } = await makeTask({ tenantId: "tenant-isolation", userId: "owner" });
