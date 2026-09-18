@@ -1,5 +1,7 @@
 import { processReadyTasks, heartbeatAgent, completeAgent, failAgent } from "./agent-manager.js";
 import { recoverExpiredJobs, recoverExpiredWorkers } from "./reliability.js";
+import { recoverProductionAssignments } from "./production-runtime.js";
+import { evaluateInfrastructureAlerts, recordObservabilityEvent } from "./observability.js";
 
 export class RuntimeCoordinator {
   constructor({tickMs = Number(process.env.RAZEKIT_TICK_MS || 15000)} = {}) {
@@ -14,14 +16,25 @@ export class RuntimeCoordinator {
     try {
       const workerRecovery = await recoverExpiredWorkers();
       const jobRecovery = await recoverExpiredJobs();
+      const productionRecovery = await recoverProductionAssignments();
+      const alerts = await evaluateInfrastructureAlerts();
       const agents = await processReadyTasks();
       return {
         ok: true,
         started: agents.length,
         recoveredWorkers: workerRecovery.length,
-        recoveredJobs: jobRecovery.length
+        recoveredJobs: jobRecovery.length,
+        recoveredProductionAssignments: productionRecovery.length,
+        openInfrastructureAlerts: alerts.length
       };
     } catch (error) {
+      try {
+        await recordObservabilityEvent({
+          type: "runtime.coordinator.failure",
+          severity: "critical",
+          message: error.message || "Runtime coordinator tick failed"
+        });
+      } catch {}
       return {ok: false, error: error.message};
     }
   }
