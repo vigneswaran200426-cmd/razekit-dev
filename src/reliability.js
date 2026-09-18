@@ -268,36 +268,64 @@ export async function runIdempotent(operationName, idempotencyKey, handler) {
   if (!idempotencyKey?.trim()) throw new Error("Idempotency key is required");
   if (typeof handler !== "function") throw new Error("Idempotent operation handler is required");
 
-  const existing = await (async () => {
-    const db = await loadDb();
-    return db.idempotencyRecords.find(x =>
-      x.operationName === operationName &&
-      x.idempotencyKey === idempotencyKey
-    ) || null;
-  })();
-
-  if (existing) return existing.result;
-
-  const result = await handler();
-
-  return transact(db => {
-    const duplicate = db.idempotencyRecords.find(x =>
+  const claim = await transact(db => {
+    const now = Date.now();
+    const existing = db.idempotencyRecords.find(x =>
       x.operationName === operationName &&
       x.idempotencyKey === idempotencyKey
     );
-    if (duplicate) return duplicate.result;
 
-    db.idempotencyRecords.push({
+    if (existing?.status === "completed") {
+      return { owned: false, result: existing.result };
+    }
+
+    if (existing?.status === "processing") {
+      const expiresAt = existing.expiresAt ? Date.parse(existing.expiresAt) : 0;
+      if (expiresAt > now) {
+        throw new Error("Idempotency key is already in progress");
+      }
+      existing.status = "processing";
+      existing.expiresAt = new Date(now + 300000).toISOString();
+      existing.updatedAt = new Date(now).toISOString();
+      return { owned: true, recordId: existing.id };
+    }
+
+    const record = {
       id: id("idem"),
       operationName,
       idempotencyKey,
-      result,
-      createdAt: new Date().toISOString()
-    });
-
-    return result;
+      status: "processing",
+      result: null,
+      createdAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 300000).toISOString()
+    };
+    db.idempotencyRecords.push(record);
+    return { owned: true, recordId: record.id };
   });
+
+  if (!claim.owned) return claim.result;
+
+  try {
+    const result = await handler();
+    return transact(db => {
+      const record = db.idempotencyRecords.find(x => x.id === claim.recordId);
+      if (!record) throw new Error("Idempotency record disappeared");
+      record.status = "completed";
+      record.result = result;
+      record.expiresAt = null;
+      record.updatedAt = new Date().toISOString();
+      return result;
+    });
+  } catch (error) {
+    await transact(db => {
+      const record = db.idempotencyRecords.find(x => x.id === claim.recordId);
+      if (record) db.idempotencyRecords.splice(db.idempotencyRecords.indexOf(record), 1);
+    });
+    throw error;
+  }
 }
+
 
 export async function recoverExpiredWorkers() {
   const db = await loadDb();
@@ -339,6 +367,11 @@ export async function recoverAgentFromWorkerLoss(workerId) {
     if (!current || !currentWorker) throw new Error("Recovery records disappeared");
 
     const now = new Date().toISOString();
+    const oldWorkspace = state.workspaces.find(x => x.id === current.workspaceId);
+    if (oldWorkspace) {
+      oldWorkspace.status = "stopped";
+      oldWorkspace.stoppedAt = now;
+    }
     current.status = AGENT_STATUS.FAILED;
     current.executionState = "recovery_required";
     current.completedAt = null;
@@ -560,6 +593,30 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
         createdAt: now,
         updatedAt: now,
         status: "ready"
+      });
+    }
+
+    db.recoveryEvents.push({
+      id: id("recovery"),
+      taskId: task.id,
+      agentInstanceId: agent.id,
+      workerId: worker.id,
+      type: "agent_recreated",
+      checkpointVersion: previousWorker?.checkpointAt ? 1 : 0,
+      previousAgentId,
+      createdAt: now
+    });
+
+    if (previousWorker?.checkpoint) {
+      db.recoveryEvents.push({
+        id: id("recovery"),
+        taskId: task.id,
+        agentInstanceId: agent.id,
+        workerId: worker.id,
+        type: "checkpoint_restored",
+        checkpointVersion: previousWorker.checkpointAt ? 1 : 0,
+        previousAgentId,
+        createdAt: now
       });
     }
 
