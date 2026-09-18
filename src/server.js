@@ -708,6 +708,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/internal\/credentials\/([^/]+)\/revoke$/);
     if(req.method==="POST"&&m){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
       return json(res,200,await revokeCredentialReference(m[1]));
     }
 
