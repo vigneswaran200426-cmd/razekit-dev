@@ -101,10 +101,16 @@ export async function createJob(input = {}) {
     const agent = db.agentInstances.find(x => x.id === input.agentInstanceId);
     if (!agent) throw new Error("Agent instance not found");
 
+    if (input.taskId && input.taskId !== agent.taskId) {
+      throw new Error("Job taskId must match the agent task");
+    }
+
+    const task = db.tasks.find(x => x.id === agent.taskId);
     const now = new Date().toISOString();
     const job = {
       id: id("job"),
-      taskId: input.taskId || agent.taskId,
+      taskId: agent.taskId,
+      tenantId: task?.tenantId || "local-tenant",
       agentInstanceId: input.agentInstanceId,
       resourceClass: input.resourceClass || "cpu",
       kind: input.kind.trim(),
