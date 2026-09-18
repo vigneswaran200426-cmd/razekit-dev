@@ -106,11 +106,22 @@ export class ExecutionEngine {
   async runWithTimeout(fn, timeoutMs) {
     if (!timeoutMs || timeoutMs <= 0) return fn();
 
-    return Promise.race([
-      fn(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Execution step timed out")), timeoutMs)
-      )
-    ]);
+    let timer;
+    let settled = false;
+
+    const operation = Promise.resolve().then(fn).finally(() => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    });
+
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        if (settled) return;
+        if (typeof this.runtime.cancel === "function") this.runtime.cancel();
+        reject(new Error("Execution step timed out"));
+      }, timeoutMs);
+    });
+
+    return Promise.race([operation, timeout]);
   }
 }
