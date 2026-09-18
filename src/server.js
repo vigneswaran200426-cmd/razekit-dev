@@ -94,7 +94,9 @@ import {
   blockProductionJob,
   listWorkerPools,
   listProductionWorkers,
-  createProductionJob
+  createProductionJob,
+  setWorkerPoolStatus,
+  setProductionWorkerStatus
 } from "./production-runtime.js";
 import { createNetworkPolicy, getNetworkPolicy, assertNetworkAccess } from "./network-policy.js";
 import { LocalPersistentObjectStore, persistArtifact } from "./object-storage.js";
@@ -521,6 +523,21 @@ const server = http.createServer(async (req,res) => {
       const i=await body(req);
       return json(res,201,await registerWorkerPool(i));
     }
+    m=p.match(/^\/internal\/infrastructure\/pools\/([^/]+)\/status$/);
+    if(req.method==="POST"&&m){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      const i=await body(req);
+      return json(res,200,await setWorkerPoolStatus(m[1],i.status));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/status$/);
+    if(req.method==="POST"&&m){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      const i=await body(req);
+      return json(res,200,await setProductionWorkerStatus(m[1],i.status));
+    }
+
+
 
     if(req.method==="POST"&&p==="/internal/infrastructure/workers/register"){
       assertAdminToken(req.headers["x-razekit-admin-token"]);
