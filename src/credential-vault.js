@@ -162,3 +162,87 @@ export async function listCredentialRequests(agentInstanceId) {
   const db = await loadDb();
   return db.credentialRequests.filter(x => x.agentInstanceId === agentInstanceId && x.status === "pending");
 }
+
+
+export async function issueTemporaryCredential(agentInstanceId, credentialId, { scopes = [], ttlMs = 10 * 60_000 } = {}) {
+  const ttl = Number(ttlMs);
+  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > 60 * 60_000) {
+    throw new Error("Credential lease TTL must be between 1ms and 1 hour");
+  }
+
+  return transact(db => {
+    const credential = db.credentials.find(item =>
+      item.id === credentialId &&
+      item.agentInstanceId === agentInstanceId &&
+      item.status === "active" &&
+      (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())
+    );
+    if (!credential) throw new Error("Credential reference is unavailable");
+
+    const requested = [...new Set(scopes.filter(Boolean))];
+    if (!requested.every(scope => credential.scopes.includes(scope))) {
+      throw new Error("Credential scope exceeds granted credential scope");
+    }
+
+    const now = new Date();
+    const lease = {
+      id: id("clease"),
+      credentialId: credential.id,
+      agentInstanceId,
+      taskId: credential.taskId,
+      secretRef: credential.secretRef,
+      scopes: requested,
+      status: "active",
+      issuedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttl).toISOString(),
+      revokedAt: null
+    };
+    db.secretLeases.push(lease);
+    return sanitizeCredentialLease(lease);
+  });
+}
+
+export async function revokeTemporaryCredential(leaseId) {
+  return transact(db => {
+    const lease = db.secretLeases.find(item => item.id === leaseId);
+    if (!lease) throw new Error("Credential lease not found");
+    lease.status = "revoked";
+    lease.revokedAt = new Date().toISOString();
+    return sanitizeCredentialLease(lease);
+  });
+}
+
+export async function validateTemporaryCredential(agentInstanceId, leaseId, requiredScopes = []) {
+  const db = await loadDb();
+  const lease = db.secretLeases.find(item =>
+    item.id === leaseId &&
+    item.agentInstanceId === agentInstanceId &&
+    item.status === "active"
+  );
+  if (!lease) return null;
+  if (Date.parse(lease.expiresAt) <= Date.now()) return null;
+  if (!requiredScopes.every(scope => lease.scopes.includes(scope))) return null;
+  return sanitizeCredentialLease(lease);
+}
+
+export async function listCredentialLeases(agentInstanceId) {
+  const db = await loadDb();
+  return db.secretLeases
+    .filter(item => item.agentInstanceId === agentInstanceId)
+    .map(sanitizeCredentialLease);
+}
+
+function sanitizeCredentialLease(lease) {
+  return {
+    id: lease.id,
+    credentialId: lease.credentialId,
+    agentInstanceId: lease.agentInstanceId,
+    taskId: lease.taskId,
+    secretRef: lease.secretRef,
+    scopes: [...lease.scopes],
+    status: lease.status,
+    issuedAt: lease.issuedAt,
+    expiresAt: lease.expiresAt,
+    revokedAt: lease.revokedAt
+  };
+}
