@@ -472,6 +472,85 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
     db.workers.push(worker);
     db.agentInstances.push(agent);
 
+    const previousSessions = previousAgentId
+      ? db.modelSessions.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+    const previousMessages = previousAgentId
+      ? db.modelMessages.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+    const previousUsage = previousAgentId
+      ? db.modelUsage.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+    const previousBlackboard = previousAgentId
+      ? db.agentBlackboards.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+    const previousSnapshots = previousAgentId
+      ? db.contextSnapshots.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+    const previousRuns = previousAgentId
+      ? db.orchestrationRuns.filter(x => x.agentInstanceId === previousAgentId)
+      : [];
+
+    if (previousSessions.length > 0) {
+      const sessionIdMap = new Map();
+      for (const source of previousSessions) {
+        const cloned = {
+          ...source,
+          id: id("session"),
+          agentInstanceId: agent.id,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null
+        };
+        sessionIdMap.set(source.id, cloned.id);
+        db.modelSessions.push(cloned);
+      }
+      for (const source of previousMessages) {
+        db.modelMessages.push({
+          ...source,
+          id: id("modelmsg"),
+          sessionId: sessionIdMap.get(source.sessionId) || source.sessionId,
+          agentInstanceId: agent.id,
+          createdAt: now
+        });
+      }
+      for (const source of previousUsage) {
+        db.modelUsage.push({
+          ...source,
+          id: id("usage"),
+          agentInstanceId: agent.id,
+          createdAt: now
+        });
+      }
+    }
+
+    for (const source of previousBlackboard) {
+      db.agentBlackboards.push({
+        ...source,
+        id: id("bb"),
+        agentInstanceId: agent.id,
+        updatedAt: now
+      });
+    }
+    for (const source of previousSnapshots) {
+      db.contextSnapshots.push({
+        ...source,
+        id: id("snapshot"),
+        agentInstanceId: agent.id,
+        createdAt: now
+      });
+    }
+    for (const source of previousRuns) {
+      db.orchestrationRuns.push({
+        ...source,
+        id: id("orch"),
+        agentInstanceId: agent.id,
+        createdAt: now,
+        updatedAt: now,
+        status: "ready"
+      });
+    }
+
     freshTask.agentInstanceId = agent.id;
     freshTask.agentType = agentType;
     freshTask.status = TASK_STATUS.QUEUED;
