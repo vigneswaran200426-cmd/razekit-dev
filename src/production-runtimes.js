@@ -165,12 +165,16 @@ export function buildGpuWorkerSpec({
   if (!["nvidia", "amd", "apple"].includes(vendor)) {
     throw new Error("Unsupported GPU vendor");
   }
+  const numericCount = Number(deviceCount);
+  if (!Number.isFinite(numericCount) || numericCount < 1) {
+    throw new Error("GPU deviceCount must be at least 1");
+  }
   return {
     resourceClass,
     runtime,
     gpu: {
       vendor,
-      deviceCount: Math.max(1, Math.floor(Number(deviceCount)))
+      deviceCount: Math.floor(numericCount)
     }
   };
 }
