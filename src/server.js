@@ -321,7 +321,11 @@ const server = http.createServer(async (req,res) => {
 
     if(req.method==="POST"&&p==="/internal/jobs/claim"){
       const i=await body(req);
-      return json(res,200,await claimNextJob(i.ownerId,i.leaseMs));
+      return json(res,200,await claimNextJob(i.ownerId,i.leaseMs,{
+        agentInstanceId:i.agentInstanceId||null,
+        taskId:i.taskId||null,
+        kind:i.kind||null
+      }));
     }
 
     m=p.match(/^\/internal\/jobs\/([^/]+)\/complete$/);
