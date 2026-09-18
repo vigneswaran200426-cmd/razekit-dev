@@ -13,7 +13,13 @@ const initialState = {
   agentInstances: [],
   workspaces: [],
   workers: [],
-  agentMessages: []
+  agentMessages: [],
+  modelSessions: [],
+  modelMessages: [],
+  modelUsage: [],
+  agentBlackboards: [],
+  contextSnapshots: [],
+  orchestrationRuns: []
 };
 
 async function ensureDb() {
