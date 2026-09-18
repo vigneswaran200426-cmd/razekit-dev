@@ -27,7 +27,9 @@ const {
   completeProductionJob,
   createProductionJob,
   listWorkerPools,
-  listProductionWorkers
+  listProductionWorkers,
+  setWorkerPoolStatus,
+  setProductionWorkerStatus
 } = await import("../src/production-runtime.js");
 const {
   buildContainerSpec,
@@ -135,6 +137,47 @@ test("production worker pools enforce resource contracts and capacity", async ()
   const workers = await listProductionWorkers(pool.id);
   assert.equal(workers.find(item => item.workerId === "cpu-worker-1").status, "ready");
   assert.equal((await listWorkerPools())[0].activeWorkers, 0);
+});
+
+test("stale workers are not eligible for new production jobs and pools can drain", async () => {
+  const pool = await registerWorkerPool({
+    name: "stale-pool",
+    resourceClass: WORKER_RESOURCE_CLASS.CPU,
+    runtime: RUNTIME_KIND.CONTAINER,
+    capacity: 1
+  });
+  await registerProductionWorker({
+    poolId: pool.id,
+    workerId: "stale-worker-1",
+    resourceClass: WORKER_RESOURCE_CLASS.CPU,
+    runtime: RUNTIME_KIND.CONTAINER
+  });
+
+  const { agent } = await makeTask("stale worker");
+  await createProductionJob({
+    agentInstanceId: agent.id,
+    kind: "stale-test",
+    resourceClass: WORKER_RESOURCE_CLASS.CPU,
+    idempotencyKey: "stale-test-1"
+  });
+
+  await transact(db => {
+    const worker = db.productionWorkers.find(item => item.workerId === "stale-worker-1");
+    worker.heartbeatAt = new Date(Date.now() - 600_000).toISOString();
+  });
+
+  assert.equal(await claimProductionJob(pool.id, "stale-owner"), null);
+  assert.equal((await listProductionWorkers(pool.id))[0].status, "offline");
+
+  await setWorkerPoolStatus(pool.id, "draining");
+  assert.equal((await listWorkerPools()).find(item => item.id === pool.id).status, "draining");
+  await assert.rejects(
+    () => claimProductionJob(pool.id, "drain-owner"),
+    /not active/
+  );
+
+  await setProductionWorkerStatus("stale-worker-1", "draining");
+  assert.equal((await listProductionWorkers(pool.id))[0].status, "draining");
 });
 
 test("resource-class routing prevents CPU workers from claiming GPU jobs", async () => {
