@@ -86,6 +86,9 @@ function migrateState(raw) {
       credential.tenantId = db.tasks.find(task => task.id === credential.taskId)?.tenantId || "local-tenant";
     }
   }
+  for (const job of db.jobs) {
+    if (!job.resourceClass) job.resourceClass = "cpu";
+  }
   db.schemaVersion = SCHEMA_VERSION;
   return db;
 }
