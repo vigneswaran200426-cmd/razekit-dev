@@ -214,12 +214,60 @@ The browser frontend at `/` is complete and standalone. It provides:
 
 Phase 12 is complete. GitHub Actions run 205 passed all 79 tests on Node 24.
  
-## Next phases
+## Phase 13 — RazeKit integration
 
-Phase 11 is complete.
+The engine is now the Development area of the RazeKit product. It remains a
+standalone service with its own tests, its own dashboard and no dependency on
+RazeKit; what changed is that RazeKit can drive it.
 
-Then:
-1. Keep standalone RazeKit DEV isolated and continue internal refinement
-2. Phase 13 RazeKit integration only after explicit authorization
+- Signed-principal identity: RazeKit vouches for a signed-in account, so the
+  engine needs no user table of its own and nobody signs in twice. One RazeKit
+  account maps to one engine tenant.
+- Real model adapters (below) alongside the deterministic pair.
+- A real autonomous loop (below) that drives tasks without being told to.
+- A self-registering worker agent for cloud machines.
 
-See `ROADMAP.md` for the complete phase contract.
+Integration guide, trust boundary and troubleshooting live in the RazeKit
+repository: `RAZEKIT_DEVELOPMENT_AREA.md`.
+
+### Real model providers
+
+The model layer stays provider-neutral; these are two adapters behind the same
+interface, configured entirely from the environment.
+
+| Role | Provider | Model | API |
+|---|---|---|---|
+| **Fable** — implementation, coding, execution-plan generation | Anthropic | `claude-fable-5-1` | Messages |
+| **Astra** — architecture, planning, review, revision and blocking decisions | OpenAI | `gpt-6-astra` | Responses |
+
+`RAZEKIT_MODEL_MODE` selects `test` (deterministic pair), `real` (live
+providers, refuses to start without both keys) or `auto` (real when both keys
+are present). The deterministic adapters are not scaffolding — they exercise the
+whole loop with real files, real tests, a real build and a real artifact, with
+no network and no bill.
+
+### The autonomous loop
+
+`src/autonomous-loop.js` is the state machine that actually drives a task:
+
+```
+PLAN (Astra) → IMPLEMENT (Fable) → EXECUTE (tools) → REVIEW (Astra)
+                        pass   → VERIFY → COMPLETED
+                        revise → back to IMPLEMENT
+                        block  → DECISION NEEDED
+```
+
+It performs at most one transition per call, over persisted state, so a worker
+can die between any two transitions and the next tick resumes where it stopped.
+Execution runs *before* review, so a review always judges a result rather than
+an intention; and a passing review does not complete a task — verification runs
+separately and overrules the reviewer.
+
+### Worker agent
+
+`node src/worker-agent.js` runs on a worker machine and offers it to the control
+plane. The worker dials out and reports its own capacity and capabilities; no
+address is configured and none is recorded, so the pool is provider-agnostic and
+a worker that stops heartbeating stops receiving work on its own.
+
+See `.env.example` for every setting, and `ROADMAP.md` for the phase contract.
