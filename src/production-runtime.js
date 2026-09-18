@@ -228,6 +228,29 @@ export async function claimProductionJob(poolId, ownerId, leaseMs = 30_000) {
     return { job: availableJob, worker };
   });
 }
+export async function recoverProductionAssignments() {
+  return transact(db => {
+    const recovered = [];
+    for (const worker of db.productionWorkers) {
+      if (worker.status !== "busy" || !worker.activeJobId) continue;
+      const job = db.jobs.find(item => item.id === worker.activeJobId);
+      if (job && job.status === JOB_STATUS.RUNNING) continue;
+
+      const pool = db.workerPools.find(item => item.id === worker.poolId);
+      const releasedJobId = worker.activeJobId;
+      worker.status = "ready";
+      worker.activeJobId = null;
+      worker.updatedAt = new Date().toISOString();
+      if (pool) {
+        pool.activeWorkers = Math.max(0, pool.activeWorkers - 1);
+        pool.updatedAt = worker.updatedAt;
+      }
+      recovered.push({ workerId: worker.workerId, jobId: releasedJobId });
+    }
+    return recovered;
+  });
+}
+
 export async function completeProductionJob(workerId, result = null) {
   const db = await loadDb();
   const worker = db.productionWorkers.find(item => item.workerId === workerId);
