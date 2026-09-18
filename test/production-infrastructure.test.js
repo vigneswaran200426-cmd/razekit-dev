@@ -171,6 +171,10 @@ test("stale workers are not eligible for new production jobs and pools can drain
 
   assert.equal(await claimProductionJob(pool.id, "stale-owner"), null);
   assert.equal((await listProductionWorkers(pool.id))[0].status, "offline");
+  await transact(db => {
+    const job = db.jobs.find(item => item.idempotencyKey === "stale-test-1");
+    if (job) job.status = JOB_STATUS.CANCELLED;
+  });
 
   await setWorkerPoolStatus(pool.id, "draining");
   assert.equal((await listWorkerPools()).find(item => item.id === pool.id).status, "draining");
