@@ -60,7 +60,7 @@ export class ConfiguredGameEngineAdapter {
     }
 
     const outputDir = step.outputDir || "build";
-    await mkdir(resolveWorkspace(step.workspaceRoot, outputDir), { recursive: true });
+    await mkdir(resolveWorkspace(this.workspaceRoot, outputDir), { recursive: true });
 
     return this.run({
       args: normalizeArgs([...this.buildArgs, ...(step.args || [])]),
