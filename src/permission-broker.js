@@ -84,6 +84,15 @@ export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
   const tool = getTool(toolKey);
+  const enabled = new Set(
+    agent.toolConfig?.manifest
+      ?.filter(item => item.enabled)
+      .map(item => item.key) || []
+  );
+
+  if (!enabled.has(toolKey)) {
+    throw new Error("Tool is not enabled for this agent instance: " + toolKey);
+  }
 
   const requested = scopes.length ? [...new Set(scopes)] : [...tool.scopes];
   for (const scope of requested) {
