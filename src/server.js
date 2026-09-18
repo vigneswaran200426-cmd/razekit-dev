@@ -41,6 +41,7 @@ import {
 import {
   registerCredentialReference,
   listCredentialReferences,
+  listCredentialRequests,
   revokeCredentialReference
 } from "./credential-vault.js";
 import { ToolAdapterRegistry, ToolBroker } from "./tool-broker.js";
@@ -340,6 +341,21 @@ const server = http.createServer(async (req,res) => {
     if(req.method==="POST"&&m){
       const i=await body(req);
       return json(res,201,await registerCredentialReference(m[1],i));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/credentials\/requests$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listCredentialRequests(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/tool-calls$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const db=await loadDb();
+      return json(res,200,db.toolCalls.filter(x=>x.agentInstanceId===m[1]));
     }
 
     m=p.match(/^\/internal\/credentials\/([^/]+)\/revoke$/);
