@@ -58,6 +58,13 @@ export function assertAppWebPlan(plan) {
 }
 
 export function normalizeModelExecutionPlan(rawPlan) {
+  if (typeof rawPlan === "string") {
+    try {
+      rawPlan = JSON.parse(rawPlan);
+    } catch {
+      return null;
+    }
+  }
   if (!rawPlan || typeof rawPlan !== "object") return null;
   const steps = Array.isArray(rawPlan.steps) ? rawPlan.steps : [];
   const normalized = {
