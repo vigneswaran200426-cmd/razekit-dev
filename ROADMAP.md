@@ -188,6 +188,7 @@ Deliverables:
 - Admin token boundary and tenant security controls
 - Tenant suspend/resume, limits, credential revocation, task cancellation and audit inspection
 - Protected public task mutation surface
+- Optional signed principal authentication mode for production request boundaries
 
 ## Phase 12 — Production Infrastructure
 **Status: planned**
