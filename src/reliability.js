@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { id, loadDb, transact } from "./store.js";
-import { AGENT_STATUS, TASK_STATUS, WORKER_STATUS } from "./domain.js";
+import {
+  AGENT_STATUS,
+  AGENT_TYPES,
+  TASK_STATUS,
+  WORKER_STATUS,
+  agentTypeForTask,
+  toolManifestForTask
+} from "./domain.js";
 import { WORKER_RUNTIME_STATE } from "./runtime-domain.js";
 import { spawnAgentForTask, startAgent } from "./agent-manager.js";
 import { recoverExpiredWorkerLease } from "./worker-runtime.js";
@@ -392,9 +399,6 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
     );
     if (existing) return existing;
 
-    const { agentTypeForTask, toolManifestForTask, AGENT_TYPES: TYPES } = requireDomain();
-    const { WORKER_RUNTIME_STATE: RUNTIME } = { WORKER_RUNTIME_STATE };
-
     const agentType = agentTypeForTask(freshTask.taskType);
     const now = new Date().toISOString();
     const workspace = {
@@ -413,15 +417,15 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
       id: id("worker"),
       taskId: task.id,
       agentInstanceId: null,
-      runtime: agentType === TYPES.KONAMI ? "game-worker" : "app-web-worker",
+      runtime: agentType === AGENT_TYPES.KONAMI ? "game-worker" : "app-web-worker",
       status: WORKER_STATUS.READY,
       runtimeState: RUNTIME.READY,
       heartbeatAt: now,
       leaseId: null,
       leaseOwner: null,
       leaseExpiresAt: null,
-      checkpoint: null,
-      checkpointAt: null,
+      checkpoint: db.workers.find(x => x.id === oldAgentIdForWorkspace(db, previousAgentId))?.checkpoint || null,
+      checkpointAt: db.workers.find(x => x.id === oldAgentIdForWorkspace(db, previousAgentId))?.checkpointAt || null,
       createdAt: now,
       stoppedAt: null,
       recreated: true,
@@ -484,8 +488,8 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
   });
 }
 
-function requireDomain() {
-  return globalThis.__razekitDomain || {};
+function oldAgentIdForWorkspace(db, agentId) {
+  return agentId || null;
 }
 
 function assertJobLease(job, leaseId) {
