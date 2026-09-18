@@ -53,7 +53,6 @@ test("routes app and website tasks to Niomi and games to Konami", () => {
   assert.equal(agentTypeForTask("app"), AGENT_TYPES.NIOMI);
   assert.equal(agentTypeForTask("website"), AGENT_TYPES.NIOMI);
   assert.equal(agentTypeForTask("game"), AGENT_TYPES.KONAMI);
-
   assert.equal(buildPreflight({taskType:"website", originalRequest:"build a site"}).predictedAgentType, AGENT_TYPES.NIOMI);
   assert.equal(buildPreflight({taskType:"game", originalRequest:"build a game"}).predictedAgentType, AGENT_TYPES.KONAMI);
 });
@@ -61,7 +60,6 @@ test("routes app and website tasks to Niomi and games to Konami", () => {
 test("each task gets its own independent agent, workspace and worker", async () => {
   const firstTask = await makeTask("website");
   const secondTask = await makeTask("game");
-
   const first = await spawnAgentForTask(firstTask.id);
   const second = await spawnAgentForTask(secondTask.id);
 
@@ -73,7 +71,6 @@ test("each task gets its own independent agent, workspace and worker", async () 
 
   await startAgent(first.id);
   await startAgent(second.id);
-
   assert.equal((await getAgent(first.id)).status, AGENT_STATUS.RUNNING);
   assert.equal((await getAgent(second.id)).status, AGENT_STATUS.RUNNING);
 });
@@ -81,7 +78,6 @@ test("each task gets its own independent agent, workspace and worker", async () 
 test("hard budget blocks spend beyond the configured ceiling", async () => {
   const task = await makeTask("app", 10);
   const agent = await spawnAgentForTask(task.id);
-
   await recordSpend(agent.id, 7, "test charge");
   assert.equal((await getAgent(agent.id)).budgetUsed, 7);
 
@@ -89,7 +85,6 @@ test("hard budget blocks spend beyond the configured ceiling", async () => {
     () => recordSpend(agent.id, 4, "should exceed limit"),
     /Hard budget limit exceeded/
   );
-
   assert.equal((await getAgent(agent.id)).budgetUsed, 7);
 });
 
@@ -111,5 +106,7 @@ test("state is persisted", async () => {
   assert.equal(db.agentInstances.length, 4);
 });
 
-await rm(dataDir, { recursive: true, force: true });
-await rm(workspaceDir, { recursive: true, force: true });
+test.after(async () => {
+  await rm(dataDir, { recursive: true, force: true });
+  await rm(workspaceDir, { recursive: true, force: true });
+});
