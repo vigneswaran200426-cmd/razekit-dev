@@ -266,37 +266,41 @@ test("missing credentials create a request and registration fulfills it", async 
 });
 
 test("multiple pending permissions keep the agent waiting until all are resolved", async () => {
-  const agent = await makeTask("Multiple Permissions", ["filesystem"], ["workspace:read"]);
+  const agent = await makeTask(
+    "Multiple Permissions",
+    ["filesystem", "shell"],
+    ["workspace:read"]
+  );
 
   const first = await authorizeToolCall(agent.id, "filesystem", ["workspace:write"]);
-  await authorizeToolCall(agent.id, "filesystem", ["workspace:read"]).catch(() => {});
+  const second = await authorizeToolCall(agent.id, "shell", ["process:execute"]);
 
-  await (async () => {
-    const db = await loadDb();
-    const existing = db.permissionRequests.find(x => x.id === first.permissionRequest.id);
-    if (existing) existing.status = "pending";
-    const second = {
-      id: id("preq"),
-      agentInstanceId: agent.id,
-      taskId: agent.taskId,
-      toolKey: "filesystem",
-      scopes: ["process:execute"],
-      reason: "Additional test permission",
-      status: "pending",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      expiresAt: null
-    };
-    db.permissionRequests.push(second);
-  })();
+  assert.equal(first.allowed, false);
+  assert.equal(second.allowed, false);
 
   const { approvePermission: approve } = await import("../src/permission-broker.js");
   await approve(first.permissionRequest.id);
 
-  const dbAfter = await loadDb();
-  const stillWaiting = dbAfter.agentInstances.find(x => x.id === agent.id);
+  let db = await loadDb();
+  let stillWaiting = db.agentInstances.find(x => x.id === agent.id);
   assert.equal(stillWaiting.status, AGENT_STATUS.WAITING_USER);
+
+  await approve(second.permissionRequest.id);
+
+  db = await loadDb();
+  const resumed = db.agentInstances.find(x => x.id === agent.id);
+  assert.equal(resumed.status, AGENT_STATUS.RUNNING);
 });
+
+test("tool outside the task manifest is rejected", async () => {
+  const agent = await makeTask("Manifest Enforcement", ["filesystem"], ["workspace:read", "workspace:write"]);
+
+  await assert.rejects(
+    () => authorizeToolCall(agent.id, "shell", ["process:execute"]),
+    /not enabled for this agent instance/
+  );
+});
+
 test.after(async () => {
   await rm(dataDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
