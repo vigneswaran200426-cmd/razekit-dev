@@ -109,17 +109,33 @@ Real provider-specific OAuth adapters and production secret-vault integration re
 
 Production deployment still requires a real durable database, distributed queue/lock service and external workflow runner; this phase establishes the application-level contracts and recovery semantics.
 
+## Phase 7 — App / Website Execution
+
+- Structured Niomi App/Web execution plans
+- Repository initialization with Git
+- Workspace-scoped file creation/editing
+- Allowlisted Node/npm/Git command execution
+- Database/auth/service adapter boundary
+- Browser smoke-test adapter boundary
+- Deployment adapter boundary
+- Automated test and build execution
+- Durable execution checkpoints and execution-run persistence
+- npm artifact packaging
+- Execution evidence/results written to the isolated agent blackboard
+- Workspace escape protection
+
+The provider-neutral service, browser, database/auth and deployment adapters remain intentionally injectable. Provider-specific production implementations are part of the infrastructure/integration work in later phases.
+
 ## Next phases
 
-Phase 7 is the next implementation target: App / Website execution through Niomi.
+Phase 8 is the next implementation target: Game execution through Konami.
 
 Then:
-1. App/Web execution
-2. Game execution
-3. Verification / 100% completion
-4. User dashboard and live task changes
-5. Security, secrets and billing
-6. Production worker infrastructure
-7. RazeKit integration
+1. Game execution
+2. Verification / 100% completion
+3. User dashboard and live task changes
+4. Security, secrets and billing
+5. Production worker infrastructure
+6. RazeKit integration
 
 See `ROADMAP.md` for the complete phase contract.
