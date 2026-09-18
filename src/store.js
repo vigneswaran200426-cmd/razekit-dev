@@ -23,6 +23,7 @@ const initialState = {
   toolPermissions: [],
   permissionRequests: [],
   credentials: [],
+  credentialRequests: [],
   toolCalls: []
 };
 
