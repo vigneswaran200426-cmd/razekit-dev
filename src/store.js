@@ -32,7 +32,8 @@ const initialState = {
   stateCheckpoints: [],
   jobs: [],
   idempotencyRecords: [],
-  recoveryEvents: []
+  recoveryEvents: [],
+  executionRuns: []
 };
 
 function migrateState(raw) {
