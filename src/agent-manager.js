@@ -254,6 +254,25 @@ export async function addAgentMessage(agentId, role, content, metadata = {}) {
   });
 }
 
+export async function setAcceptanceCriterion(taskId, criterionId, status, evidence = null) {
+  const allowed = new Set(["pending", "passed", "failed", "skipped"]);
+  if (!allowed.has(status)) throw new Error("Invalid acceptance criterion status");
+
+  return transact(db => {
+    const criterion = db.acceptanceCriteria.find(x => x.id === criterionId && x.taskId === taskId);
+    if (!criterion) throw new Error("Acceptance criterion not found");
+    criterion.status = status;
+    criterion.evidence = evidence;
+    criterion.updatedAt = new Date().toISOString();
+    return criterion;
+  });
+}
+
+export async function acceptanceForTask(taskId) {
+  const db = await loadDb();
+  return db.acceptanceCriteria.filter(x => x.taskId === taskId);
+}
+
 export async function recordSpend(agentId, amount, reason = "billable action") {
   const spend = Number(amount);
   if (!Number.isFinite(spend) || spend < 0) throw new Error("Spend amount must be a non-negative number");
@@ -341,6 +360,15 @@ export async function cancelAgent(agentId, reason = "Cancelled by user") {
 }
 
 export async function completeAgent(agentId, resultSummary = "Task completed") {
+  const agent = await getAgent(agentId);
+  if (!agent) throw new Error("Agent instance not found");
+
+  const criteria = await acceptanceForTask(agent.taskId);
+  const incomplete = criteria.filter(x => x.status !== "passed");
+  if (incomplete.length > 0) {
+    throw new Error("Agent cannot complete until all acceptance criteria pass");
+  }
+
   return terminalTransition(agentId, AGENT_STATUS.COMPLETED, TASK_STATUS.COMPLETED, resultSummary);
 }
 
