@@ -60,6 +60,11 @@ import {
   getCheckpoint as getDurableCheckpoint
 } from "./reliability.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
+import {
+  buildAppWebExecutionPlan,
+  executeAppWebTask,
+  listAppWebRuns
+} from "./app-web-executor.js";
 
 const PORT = Number(process.env.PORT || 3000);
 const runtimeCoordinator = createRuntimeCoordinator();
@@ -378,6 +383,34 @@ const server = http.createServer(async (req,res) => {
       const workers=await recoverExpiredWorkers();
       const jobs=await recoverExpiredJobs();
       return json(res,200,{workers,jobs});
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/app-web\/plan$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await buildAppWebExecutionPlan(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/app-web\/execute$/);
+    if(req.method==="POST"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const i=await body(req);
+      const workspace=await loadDb().then(db=>db.workspaces.find(x=>x.id===agent.workspaceId));
+      if(!workspace)return json(res,409,{error:"Agent workspace not found"});
+      return json(res,202,await executeAppWebTask({
+        agentInstanceId:m[1],
+        workspaceRoot:workspace.path,
+        plan:i.plan||null
+      }));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/app-web\/runs$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listAppWebRuns(m[1]));
     }
 
     if(req.method==="GET"&&p==="/internal/tools"){
