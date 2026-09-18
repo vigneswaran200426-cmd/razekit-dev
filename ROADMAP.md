@@ -191,18 +191,20 @@ Deliverables:
 - Optional signed principal authentication mode for production request boundaries
 
 ## Phase 12 — Production Infrastructure
-**Status: planned**
+**Status: implementation complete — CI validation pending**
 
 Deliverables:
-- Real containers / microVMs
-- Worker pools
-- Queueing
-- GPU worker class for games
-- Persistent storage
-- Object storage
-- Network isolation
-- Observability
-- Alerting
+- Container / microVM runtime adapter contracts with hardened isolation defaults
+- Worker pools with CPU/GPU resource classes
+- Atomic production job assignment on the existing durable queue
+- Worker heartbeats, stale-worker rejection and graceful draining
+- GPU worker resource specifications
+- Durable database adapter boundary with Postgres transaction support
+- Persistent object storage adapter with tenant-scoped artifact namespaces
+- Network allow/deny policy with private-network rejection and DNS-resolved checks
+- Metrics, infrastructure events and threshold-based alerts
+- Runtime-coordinator integration for production assignment recovery and alerts
+- Infrastructure control/status APIs
 
 ## Phase 13 — RazeKit Integration
 **Status: planned**
