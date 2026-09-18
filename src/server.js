@@ -83,6 +83,25 @@ import {
 } from "./dashboard.js";
 import { dashboardPage } from "./dashboard-page.js";
 import {
+  WORKER_RESOURCE_CLASS,
+  RUNTIME_KIND,
+  registerWorkerPool,
+  registerProductionWorker,
+  heartbeatProductionWorker,
+  claimProductionJob,
+  completeProductionJob,
+  retryProductionJob,
+  blockProductionJob,
+  listWorkerPools,
+  listProductionWorkers,
+  createProductionJob
+} from "./production-runtime.js";
+import { createNetworkPolicy, getNetworkPolicy, assertNetworkAccess } from "./network-policy.js";
+import { LocalPersistentObjectStore, persistArtifact } from "./object-storage.js";
+import { recordObservabilityEvent, recordMetric, evaluateInfrastructureAlerts, resolveAlert, listAlerts, metricsSnapshot } from "./observability.js";
+import { buildContainerSpec, buildMicroVMRuntimeSpec, buildGpuWorkerSpec } from "./production-runtimes.js";
+
+import {
   principalFromHeaders,
   ensureTenant,
   assertTenantActive,
@@ -487,6 +506,122 @@ const server = http.createServer(async (req,res) => {
         action:u.searchParams.get("action")||null,
         limit:u.searchParams.get("limit")||100
       }));
+    }
+
+    if(req.method==="GET"&&p==="/internal/infrastructure/status"){
+      const pools=await listWorkerPools();
+      const workers=await listProductionWorkers();
+      const metrics=await metricsSnapshot();
+      const alerts=await evaluateInfrastructureAlerts();
+      return json(res,200,{pools,workers,metrics,alerts});
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/pools"){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      const i=await body(req);
+      return json(res,201,await registerWorkerPool(i));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/workers/register"){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      const i=await body(req);
+      return json(res,201,await registerProductionWorker(i));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/heartbeat$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await heartbeatProductionWorker(m[1],i));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/pools\/([^/]+)\/jobs\/claim$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await claimProductionJob(m[1],i.ownerId,i.leaseMs));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/job\/complete$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await completeProductionJob(m[1],i.result||null));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/job\/retry$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await retryProductionJob(m[1],i.error,i.delayMs));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/job\/block$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await blockProductionJob(m[1],i.reason));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/jobs"){
+      const i=await body(req);
+      return json(res,201,await createProductionJob(i));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/network-policies"){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      const i=await body(req);
+      return json(res,201,await createNetworkPolicy(i));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/network-policies\/([^/]+)\/check$/);
+    if(req.method==="POST"&&m){
+      const policy=await getNetworkPolicy(m[1]);
+      if(!policy)return json(res,404,{error:"Network policy not found"});
+      const i=await body(req);
+      return json(res,200,assertNetworkAccess(policy,i.target));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/artifacts"){
+      const i=await body(req);
+      const store=new LocalPersistentObjectStore();
+      const value=i.encoding==="base64" ? Buffer.from(String(i.value||""),"base64") : String(i.value||"");
+      return json(res,201,await persistArtifact({
+        store,
+        tenantId:i.tenantId||principal.tenantId,
+        taskId:i.taskId,
+        artifactType:i.artifactType,
+        objectKey:i.objectKey,
+        value,
+        metadata:i.metadata||{}
+      }));
+    }
+
+    if(req.method==="GET"&&p==="/internal/infrastructure/metrics"){
+      return json(res,200,await metricsSnapshot());
+    }
+
+    if(req.method==="GET"&&p==="/internal/infrastructure/alerts"){
+      return json(res,200,await listAlerts({
+        status:u.searchParams.get("status")||null,
+        severity:u.searchParams.get("severity")||null
+      }));
+    }
+
+    m=p.match(/^\/internal\/infrastructure\/alerts\/([^/]+)\/resolve$/);
+    if(req.method==="POST"&&m){
+      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      return json(res,200,await resolveAlert(m[1]));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/runtime/container/spec"){
+      const i=await body(req);
+      return json(res,200,buildContainerSpec(i));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/runtime/microvm/spec"){
+      const i=await body(req);
+      return json(res,200,buildMicroVMRuntimeSpec(i));
+    }
+
+    if(req.method==="POST"&&p==="/internal/infrastructure/runtime/gpu/spec"){
+      const i=await body(req);
+      return json(res,200,buildGpuWorkerSpec(i));
     }
 
     if(req.method==="POST"&&p==="/internal/jobs"){
