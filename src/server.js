@@ -42,7 +42,10 @@ import {
   registerCredentialReference,
   listCredentialReferences,
   listCredentialRequests,
-  revokeCredentialReference
+  revokeCredentialReference,
+  issueTemporaryCredential,
+  revokeTemporaryCredential,
+  listCredentialLeases
 } from "./credential-vault.js";
 import { ToolAdapterRegistry, ToolBroker } from "./tool-broker.js";
 import { EchoToolAdapter } from "./testing-tool-adapters.js";
@@ -94,7 +97,8 @@ import {
   resumeTenant,
   updateTenantLimits,
   cancelTenantTasks,
-  queryAudit
+  queryAudit,
+  adminRevokeCredential
 } from "./admin-control.js";
 
 
@@ -461,6 +465,12 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,await cancelTenantTasks(m[1],"admin"));
     }
 
+    m=p.match(/^\/internal\/admin\/credentials\/([^/]+)\/revoke$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await adminRevokeCredential(m[1],"admin"));
+    }
+
+
     if(req.method==="GET"&&p==="/internal/admin/audit"){
       return json(res,200,await queryAudit({
         tenantId:u.searchParams.get("tenantId")||null,
@@ -663,6 +673,30 @@ const server = http.createServer(async (req,res) => {
       if(!agent)return json(res,404,{error:"Agent not found"});
       return json(res,200,await listCredentialRequests(m[1]));
     }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/credentials\/([^/]+)\/lease$/);
+    if(req.method==="POST"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const i=await body(req);
+      return json(res,201,await issueTemporaryCredential(m[1],m[2],{
+        scopes:i.scopes||[],
+        ttlMs:i.ttlMs
+      }));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/credential-leases$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listCredentialLeases(m[1]));
+    }
+
+    m=p.match(/^\/internal\/credentials\/leases\/([^/]+)\/revoke$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await revokeTemporaryCredential(m[1]));
+    }
+
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/tool-calls$/);
     if(req.method==="GET"&&m){
