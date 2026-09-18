@@ -75,7 +75,7 @@ Deliverables:
 - Cost accounting per model action
 
 ## Phase 5 — Tool, MCP & Permission Broker
-**Status: planned**
+**Status: in progress**
 
 Deliverables:
 - Central tool registry
