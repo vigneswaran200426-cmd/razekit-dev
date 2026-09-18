@@ -51,11 +51,26 @@ export async function writeBlackboard(agentInstanceId, key, value, source = "orc
 }
 
 export async function snapshotBlackboard(agentInstanceId, reason = "context_compaction") {
-  const entries = await readBlackboard(agentInstanceId);
-  return {
-    agentInstanceId,
-    reason,
-    createdAt: new Date().toISOString(),
-    entries
-  };
+  return transact(db => {
+    const agent = db.agentInstances.find(x => x.id === agentInstanceId);
+    if (!agent) throw new Error("Agent instance not found");
+
+    const entries = db.agentBlackboards.filter(x => x.agentInstanceId === agentInstanceId);
+    const snapshot = {
+      id: id("snapshot"),
+      agentInstanceId,
+      reason,
+      version: entries.reduce((max, entry) => Math.max(max, entry.version), 0),
+      entries,
+      createdAt: new Date().toISOString()
+    };
+
+    db.contextSnapshots.push(snapshot);
+    return snapshot;
+  });
+}
+
+export async function listContextSnapshots(agentInstanceId) {
+  const db = await loadDb();
+  return db.contextSnapshots.filter(x => x.agentInstanceId === agentInstanceId);
 }
