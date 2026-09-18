@@ -213,6 +213,9 @@ export async function executeAppWebTask({
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
   if (agent.agentType !== "niomi") throw new Error("App/Web execution is only available to Niomi");
+  if (!["running", "waiting_user"].includes(agent.status)) {
+    throw new Error("Niomi agent must be running before App/Web execution");
+  }
 
   const executionPlan = plan ? normalizeModelExecutionPlan(plan) : await buildAppWebExecutionPlan(agentInstanceId);
   assertAppWebPlan(executionPlan);
@@ -278,6 +281,18 @@ export async function executeAppWebTask({
       run.result = result;
       run.error = result.error || null;
     });
+    await writeBlackboard(
+      agentInstanceId,
+      "execution.lastResult",
+      {
+        runId,
+        status: result.status,
+        planId: executionPlan.id,
+        completedAt: new Date().toISOString(),
+        error: result.error || null
+      },
+      "app-web-runtime"
+    );
 
     return { runId, ...result };
   } catch (error) {
