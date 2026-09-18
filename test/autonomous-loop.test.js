@@ -124,6 +124,30 @@ test("a website task runs plan -> implement -> execute -> review -> verify -> co
   assert.ok(blackboard.some(x => x.key === "execution.plan"), "Fable's plan should be on the blackboard");
 });
 
+test("recorded deliverable paths do not depend on the worker's platform", async () => {
+  const orchestrator = orchestratorWithTestAdapters();
+  const task = await makeTask("Portable paths");
+  const agent = await spawnAgentForTask(task.id);
+  await startAgent(agent.id);
+
+  await runToCompletion(agent.id, orchestrator);
+
+  const dashboard = await taskDashboard(task.id);
+  const paths = dashboard.deliverables.map(item => item.path);
+
+  assert.ok(paths.length > 0, "the build should report deliverables");
+  // A path recorded with the producing machine's separator makes the same task
+  // look different depending on where it ran, and the dashboard, verification
+  // and any download all read these off that machine.
+  for (const item of paths) {
+    assert.ok(!item.includes("\\"), `deliverable path must be POSIX, got: ${item}`);
+  }
+  assert.ok(
+    paths.some(item => item.includes("test/")),
+    "a nested path should be recorded with forward slashes: " + paths.join(", "),
+  );
+});
+
 test("the hard budget stops the loop instead of overspending", async () => {
   const orchestrator = orchestratorWithTestAdapters();
   // The deterministic adapters spend 0.03 planning and 0.02 implementing, so a

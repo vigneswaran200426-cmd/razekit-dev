@@ -22,6 +22,15 @@ function resolveWorkspacePath(workspaceRoot, relativePath) {
   return candidate;
 }
 
+// A path recorded in a step result is read off the machine that produced it —
+// by the dashboard's deliverables list, by verification, by whoever downloads
+// the build. Recording `test\page.test.mjs` because the worker happened to be
+// Windows makes the same task look different depending on where it ran, so
+// recorded paths are always POSIX.
+function recordedPath(workspaceRoot, absolutePath) {
+  return path.relative(workspaceRoot, absolutePath).split(path.sep).join("/");
+}
+
 export class AppWebRuntime {
   constructor({
     workspaceRoot,
@@ -48,13 +57,13 @@ export class AppWebRuntime {
         const filePath = resolveWorkspacePath(this.workspaceRoot, step.path);
         await mkdir(path.dirname(filePath), { recursive: true });
         await writeFile(filePath, step.content, "utf8");
-        return { operation: step.kind, path: path.relative(this.workspaceRoot, filePath) };
+        return { operation: step.kind, path: recordedPath(this.workspaceRoot, filePath) };
       }
 
       case APP_WEB_STEP_KINDS.WORKSPACE_MKDIR: {
         const directory = resolveWorkspacePath(this.workspaceRoot, step.path);
         await mkdir(directory, { recursive: true });
-        return { operation: step.kind, path: path.relative(this.workspaceRoot, directory) };
+        return { operation: step.kind, path: recordedPath(this.workspaceRoot, directory) };
       }
 
       case APP_WEB_STEP_KINDS.COMMAND:
@@ -129,7 +138,7 @@ export class AppWebRuntime {
     return {
       operation: APP_WEB_STEP_KINDS.PACKAGE,
       packageName,
-      outputDir: path.relative(this.workspaceRoot, packageDir),
+      outputDir: recordedPath(this.workspaceRoot, packageDir),
       files
     };
   }
