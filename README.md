@@ -169,9 +169,22 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 - Deliverable aggregation from execution artifacts
 - Approve/decline flow for scope changes
 
+## Phase 11 — Security, Secrets & Billing
+
+- Tenant/user isolation boundary for public task APIs
+- Provider-neutral secret vault adapter boundary
+- Scoped temporary credential leases with expiry and revocation
+- Redacted security audit log
+- Provider billing adapter registry
+- Atomic spend reservations, hard budget enforcement and idempotent billing
+- Durable billing ledger
+- Active-task, command, tool-call and hourly-spend abuse controls
+- Admin token controls for tenant suspension/resume, limits, cancellations, credential revocation and audit inspection
+- Public task PATCH restricted to safe mutable fields
+
 ## Next phases
 
-Phase 10 is complete.
+Phase 11 is complete.
 
 Then:
 1. Security, secrets and billing
