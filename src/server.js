@@ -301,6 +301,9 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/authorize$/);
     if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
+      const tenant = await ensureTenant(principal.tenantId);
+      assertTenantActive(tenant);
       const i=await body(req);
       const task=await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
@@ -316,6 +319,14 @@ const server = http.createServer(async (req,res) => {
       });
       const agent=await spawnAgentForTask(task.id);
       const started=agent.status==="running"?agent:await startAgent(agent.id);
+      await writeAudit({
+        tenantId: principal.tenantId,
+        userId: principal.userId,
+        requestId: principal.requestId,
+        action: "task.authorize",
+        resourceType: "task",
+        resourceId: task.id
+      });
       return json(res,200,{task:await getTask(task.id),agent:started});
     }
 
@@ -368,6 +379,7 @@ const server = http.createServer(async (req,res) => {
       const task=await getTask(m[1]);
       if(!task)return json(res,404,{error:"Task not found"});
       const i=await body(req);
+      if(!i.content?.trim()) return json(res,400,{error:"content is required"});
       return json(res,200,await submitUserCommand(m[1],i.content));
     }
 
