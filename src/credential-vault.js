@@ -32,6 +32,37 @@ export async function registerCredentialReference(agentInstanceId, input) {
     };
 
     db.credentials.push(reference);
+
+    const matchingRequests = db.credentialRequests.filter(request =>
+      request.agentInstanceId === agentInstanceId &&
+      request.provider === input.provider &&
+      request.status === "pending" &&
+      request.scopes.every(scope => reference.scopes.includes(scope))
+    );
+
+    for (const request of matchingRequests) {
+      request.status = "fulfilled";
+      request.credentialId = reference.id;
+      request.updatedAt = now;
+    }
+
+    const pendingPermission = db.permissionRequests.some(request =>
+      request.agentInstanceId === agentInstanceId && request.status === "pending"
+    );
+    const pendingCredential = db.credentialRequests.some(request =>
+      request.agentInstanceId === agentInstanceId && request.status === "pending"
+    );
+
+    if (!pendingPermission && !pendingCredential && agent.status === "waiting_user") {
+      agent.status = "running";
+      agent.executionState = "running";
+      const task = db.tasks.find(x => x.id === agent.taskId);
+      if (task?.status === "waiting_user") {
+        task.status = "running";
+        task.updatedAt = now;
+      }
+    }
+
     return sanitizeCredential(reference);
   });
 }
