@@ -19,8 +19,20 @@ const initialState = {
   modelUsage: [],
   agentBlackboards: [],
   contextSnapshots: [],
-  orchestrationRuns: []
+  orchestrationRuns: [],
+  toolPermissions: [],
+  permissionRequests: [],
+  credentials: [],
+  toolCalls: []
 };
+
+function migrateState(raw) {
+  const db = raw && typeof raw === "object" ? raw : {};
+  for (const [key, value] of Object.entries(initialState)) {
+    if (!Array.isArray(db[key])) db[key] = [...value];
+  }
+  return db;
+}
 
 async function ensureDb() {
   await mkdir(DATA_DIR, { recursive: true });
@@ -33,13 +45,14 @@ async function ensureDb() {
 
 export async function loadDb() {
   await ensureDb();
-  return JSON.parse(await readFile(DB_FILE, "utf8"));
+  return migrateState(JSON.parse(await readFile(DB_FILE, "utf8")));
 }
 
 export async function saveDb(db) {
   await ensureDb();
+  const migrated = migrateState(db);
   const tempFile = DB_FILE + ".tmp";
-  await writeFile(tempFile, JSON.stringify(db, null, 2));
+  await writeFile(tempFile, JSON.stringify(migrated, null, 2));
   await rename(tempFile, DB_FILE);
 }
 
