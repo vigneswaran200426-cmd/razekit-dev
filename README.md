@@ -2,67 +2,81 @@
 
 Standalone foundation for autonomous app/web and game development agents.
 
+## Core model
+
+- App / Website → **Niomi**
+- Game → **Konami**
+- One task → one isolated active agent instance
+- Fable + Astra are coordinated model sessions inside that instance.
+- Workspace, worker, state, tools, credentials, logs and budget are task-scoped.
+- Completion is gated by objective acceptance criteria.
+
 ## Phase 1 — Task Creation
 
-- App / Website / Game task types
+- App / Website / Game tasks
 - Preflight analysis
+- Predicted tools/services
 - Estimated budget + hard maximum budget
 - Explicit autonomous-execution authorization
 - Acceptance criteria
 - Persistent task state
-- Task progress endpoint
+- Task progress
 
 ## Phase 2 — Agent Manager
 
-### Agent routing
-
-- App → **Niomi**
-- Website → **Niomi**
-- Game → **Konami**
-
-Every task receives its own independent agent instance. The instance has separate task state, workspace, worker, tool manifest, model configuration and budget ceiling.
-
-### Lifecycle
-
-`ready_for_agent → queued → running → completed | cancelled | failed`
-
-Authorized task creation now automatically provisions and starts its agent.
-
-### Isolation
-
-- Workspace is created under `RAZEKIT_WORKSPACE_ROOT/<taskId>`.
-- Local state writes are serialized.
-- Database writes use a temporary file + atomic rename.
-- Multiple tasks cannot share the same agent instance/workspace/worker records.
-
-### Budget
-
-Every agent has a hard budget ceiling. Spending must go through the budget manager and is rejected when the ceiling would be exceeded.
-
-### Dashboard / API
-
-The prototype includes:
-
-- Task creation + preflight
-- Agent list/details
-- Task progress
+- Niomi/Konami routing
+- One agent instance per task
+- Dedicated worker + workspace
+- Task-scoped tool manifest
+- Model configuration
+- Budget attachment
+- Start / heartbeat / cancel / fail / complete
+- Acceptance-gated completion
 - Task chat messages
-- Agent heartbeat
-- Manual spawn/start/process-ready
-- Cancellation/completion
-- Budget check + charge endpoints
-- Health endpoint
 
-### Tests
+## Phase 3 — Worker Runtime & Execution Foundation
+
+- Worker runtime states and leases
+- Lease ownership and renewal
+- Expired-lease recovery
+- Resumable worker checkpoints
+- Execution plan / step contract
+- Step retry and timeout handling
+- Runtime cancellation on timeout
+- Controlled local process adapter for development
+- Workspace-bound execution directory
+- Executable allowlist
+- No shell invocation by default
+- Internal worker lease/checkpoint APIs
+- Runtime adapter boundary kept separate from model providers
+
+### Current execution boundary
+
+Phase 3 deliberately does **not** pretend to be a production sandbox. The local process adapter is a development/testing adapter. Production workers will later use containers or microVMs with stronger network, filesystem, process and credential isolation.
+
+## Tests
+
+Run:
 
 ```bash
 npm test
 ```
 
-The test suite covers routing, per-task isolation, hard budget enforcement, completion cleanup and persistence.
+GitHub Actions runs the test suite on pushes and pull requests.
 
-## Important execution boundary
+## Next phases
 
-This repository now has the orchestration layer, but the real model/tool execution adapter is intentionally separate. Production execution still needs a secure worker runtime, scoped credentials/secrets, model API adapters, MCP/tool adapters, build environments, sandboxing and external billing integration.
+Phase 4 connects the isolated agent instances to the Niomi/Konami model orchestrator.
 
-That separation is deliberate: Claude Code can replace the runtime adapter later without rewriting task creation or Agent Manager state.
+Then:
+1. Tool + MCP + permission broker
+2. Persistent recovery system
+3. App/Web execution
+4. Game execution
+5. Verification / 100% completion
+6. User dashboard and live task changes
+7. Security, secrets and billing
+8. Production worker infrastructure
+9. RazeKit integration
+
+See `ROADMAP.md` for the complete phase contract.
