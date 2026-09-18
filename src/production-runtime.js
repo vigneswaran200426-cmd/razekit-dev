@@ -15,6 +15,7 @@ export const RUNTIME_KIND = {
 
 const RESOURCE_CLASSES = new Set(Object.values(WORKER_RESOURCE_CLASS));
 const RUNTIMES = new Set(Object.values(RUNTIME_KIND));
+const PRODUCTION_WORKER_HEARTBEAT_TIMEOUT_MS = Number(process.env.RAZEKIT_PRODUCTION_WORKER_HEARTBEAT_TIMEOUT_MS || 120000);
 
 export function assertResourceClass(value) {
   if (!RESOURCE_CLASSES.has(value)) throw new Error("Unsupported worker resource class: " + value);
@@ -99,6 +100,9 @@ export async function registerWorkerPool({
   return transact(db => {
     const existing = db.workerPools.find(item => item.name === name);
     if (existing) {
+      if (existing.activeWorkers > normalizedCapacity) {
+        throw new Error("Worker pool capacity cannot be below current active workers");
+      }
       existing.resourceClass = resourceClass;
       existing.runtime = runtime;
       existing.capacity = normalizedCapacity;
@@ -139,6 +143,7 @@ export async function registerProductionWorker({
   return transact(db => {
     const pool = db.workerPools.find(item => item.id === poolId);
     if (!pool) throw new Error("Worker pool not found");
+    if (pool.status !== "active") throw new Error("Worker pool is not active");
     if (pool.resourceClass !== resourceClass || pool.runtime !== runtime) {
       throw new Error("Worker does not match pool resource contract");
     }
@@ -193,10 +198,19 @@ export async function claimProductionJob(poolId, ownerId, leaseMs = 30_000) {
     if (pool.status !== "active") throw new Error("Worker pool is not active");
     if (pool.activeWorkers >= pool.capacity) return null;
 
+    for (const candidate of db.productionWorkers.filter(item => item.poolId === poolId && item.status === "ready" && !item.activeJobId)) {
+      if (Date.parse(candidate.heartbeatAt || 0) <= now - PRODUCTION_WORKER_HEARTBEAT_TIMEOUT_MS) {
+        candidate.status = "offline";
+        candidate.updatedAt = new Date(now).toISOString();
+        pool.healthyWorkers = Math.max(0, pool.healthyWorkers - 1);
+      }
+    }
+
     const worker = db.productionWorkers.find(item =>
       item.poolId === poolId &&
       item.status === "ready" &&
-      !item.activeJobId
+      !item.activeJobId &&
+      Date.parse(item.heartbeatAt || 0) > now - PRODUCTION_WORKER_HEARTBEAT_TIMEOUT_MS
     );
     if (!worker) return null;
 
@@ -309,6 +323,46 @@ function releaseWorkerCapacity(db, workerId, jobId, status) {
     pool.updatedAt = worker.updatedAt;
   }
 }
+
+export async function setWorkerPoolStatus(poolId, status) {
+  if (!["active", "draining", "offline"].includes(status)) {
+    throw new Error("Invalid worker pool status");
+  }
+
+  return transact(db => {
+    const pool = db.workerPools.find(item => item.id === poolId);
+    if (!pool) throw new Error("Worker pool not found");
+    pool.status = status;
+    pool.updatedAt = new Date().toISOString();
+    return pool;
+  });
+}
+
+export async function setProductionWorkerStatus(workerId, status) {
+  if (!["ready", "draining", "offline"].includes(status)) {
+    throw new Error("Invalid production worker status");
+  }
+
+  return transact(db => {
+    const worker = db.productionWorkers.find(item => item.workerId === workerId);
+    if (!worker) throw new Error("Production worker not found");
+    if (worker.activeJobId && status === "offline") {
+      throw new Error("Active worker must finish or recover its job before going offline");
+    }
+    const pool = db.workerPools.find(item => item.id === worker.poolId);
+    const wasHealthy = ["ready", "busy"].includes(worker.status);
+    const willBeHealthy = ["ready", "busy"].includes(status);
+    worker.status = status;
+    worker.updatedAt = new Date().toISOString();
+    if (pool && wasHealthy !== willBeHealthy) {
+      pool.healthyWorkers += willBeHealthy ? 1 : -1;
+      pool.healthyWorkers = Math.max(0, pool.healthyWorkers);
+      pool.updatedAt = worker.updatedAt;
+    }
+    return worker;
+  });
+}
+
 
 export async function listWorkerPools() {
   const db = await loadDb();
