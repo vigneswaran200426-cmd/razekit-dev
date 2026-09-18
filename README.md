@@ -183,6 +183,22 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 - Public task PATCH restricted to safe mutable fields
 - Optional HMAC-signed principal mode for production tenant/user authentication boundaries
 
+## Phase 12 — Production Infrastructure
+
+- Provider-neutral container and microVM runtime boundaries with hardened defaults
+- CPU and GPU worker pools over the existing durable job queue
+- Atomic production job assignment and resource-class routing
+- Worker heartbeat, stale-worker rejection and drain/offline controls
+- GPU worker specifications for game workloads
+- Durable Postgres state adapter boundary
+- Persistent tenant-scoped object/artifact storage
+- Network policy with HTTP(S) allowlists, port controls and private-network rejection
+- Infrastructure metrics, events and threshold alerts
+- Runtime coordinator recovery for production worker assignments
+- Infrastructure status, worker-pool, job, artifact and alert APIs
+
+Phase 12 implementation is complete; GitHub Actions validation is being run against the final main-branch state.
+ 
 ## Next phases
 
 Phase 11 is complete.
