@@ -12,6 +12,7 @@ import {
   assertGamePlan,
   normalizeGamePlan
 } from "./game-domain.js";
+import { createGameArtifactManifest } from "./game-artifacts.js";
 
 function resolveWorkspacePath(workspaceRoot, relativePath) {
   const root = path.resolve(workspaceRoot);
