@@ -62,7 +62,7 @@ Deliverables:
 - No model-provider coupling yet
 
 ## Phase 4 — Niomi / Konami Model Orchestrator
-**Status: planned**
+**Status: in progress**
 
 Deliverables:
 - Per-instance model session state
