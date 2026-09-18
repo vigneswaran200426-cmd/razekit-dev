@@ -56,7 +56,7 @@ Deliverables:
 - Worker leases and heartbeats
 - Checkpoints / resumable state
 - Runtime adapter interface
-- Sandboxed local development adapter for testing
+- Controlled local development adapter for testing
 - Controlled command execution
 - Retry / timeout / cancellation boundaries
 - No model-provider coupling yet
