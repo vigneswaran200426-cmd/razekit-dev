@@ -291,8 +291,9 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
         if(!t)throw new Error("Task not found");
+        const mutable = new Set(["title", "specification", "deadline"]);
         for(const [key,value] of Object.entries(i)){
-          if(!["id","agentInstanceId","agentType","createdAt","status"].includes(key)&&value!==undefined)t[key]=value;
+          if(mutable.has(key) && value!==undefined)t[key]=value;
         }
         t.updatedAt=new Date().toISOString();
         return t;
