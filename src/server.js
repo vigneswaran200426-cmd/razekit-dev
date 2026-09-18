@@ -11,7 +11,9 @@ import {
   getAgent,
   completeAgent,
   addAgentMessage,
-  processReadyTasks
+  processReadyTasks,
+  setAcceptanceCriterion,
+  acceptanceForTask
 } from "./agent-manager.js";
 import { checkBudget, charge } from "./budget-manager.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
@@ -218,6 +220,21 @@ const server = http.createServer(async (req,res) => {
         agentType:a?.agentType||null,budgetUsed:a?.budgetUsed??t.actualSpend,
         budgetLimit:t.maxBudget,heartbeat:a?.lastHeartbeat||null
       });
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/acceptance$/);
+    if(req.method==="GET"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      return json(res,200,await acceptanceForTask(task.id));
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/acceptance\/([^/]+)$/);
+    if(req.method==="PATCH"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      const i=await body(req);
+      return json(res,200,await setAcceptanceCriterion(task.id,m[2],i.status,i.evidence||null));
     }
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/messages$/);
