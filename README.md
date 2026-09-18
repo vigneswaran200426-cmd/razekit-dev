@@ -78,12 +78,27 @@ GitHub Actions runs the test suite on pushes and pull requests.
 
 The model layer is provider-neutral. Real production model credentials/adapters are deliberately not embedded in this phase.
 
+## Phase 5 — Tool, MCP & Permission Broker
+
+- Central tool registry
+- Task-scoped manifest enforcement
+- Exact permission scopes and one-time preauthorization
+- New permission request + approve/deny flow
+- Credential-reference abstraction with expiry and explicit credential requests
+- Tool-call audit records
+- Missing-adapter audit records
+- Per-agent permission and credential isolation
+- Internal authorization, credential and tool invocation APIs
+
+Real provider-specific OAuth adapters and production secret-vault integration remain external infrastructure work; this phase keeps secrets out of the application database.
+
 ## Next phases
 
-Phase 5 adds the tool/MCP/permission broker around these model sessions.
+Phase 6 is the next implementation target: persistent recovery and reliability.
 
 Then:
-1. Persistent recovery system
+1. App/Web execution
+
 
 2. Persistent recovery system
 3. App/Web execution
