@@ -110,6 +110,7 @@ export function sanitizeCredential(credential) {
     id: credential.id,
     agentInstanceId: credential.agentInstanceId,
     taskId: credential.taskId,
+    tenantId: credential.tenantId || "local-tenant",
     provider: credential.provider,
     kind: credential.kind,
     scopes: [...credential.scopes],
