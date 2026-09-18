@@ -1,0 +1,11 @@
+{
+  "name": "razekit-dev",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "RazeKit DEV - Phase 1 task creation and Phase 2 agent manager prototype",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  }
+}
