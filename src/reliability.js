@@ -106,6 +106,7 @@ export async function createJob(input = {}) {
       id: id("job"),
       taskId: input.taskId || agent.taskId,
       agentInstanceId: input.agentInstanceId,
+      resourceClass: input.resourceClass || "cpu",
       kind: input.kind.trim(),
       payload: input.payload ?? {},
       status: JOB_STATUS.QUEUED,
@@ -139,6 +140,9 @@ export async function claimNextJob(ownerId, leaseMs = DEFAULT_LEASE_MS, filters 
   if (filters.kind != null && !filters.kind.trim()) {
     throw new Error("kind filter must be non-empty");
   }
+  if (filters.resourceClass != null && !filters.resourceClass.trim()) {
+    throw new Error("resourceClass filter must be non-empty");
+  }
 
   return transact(db => {
     const now = Date.now();
@@ -148,7 +152,8 @@ export async function claimNextJob(ownerId, leaseMs = DEFAULT_LEASE_MS, filters 
         Date.parse(job.availableAt) <= now &&
         (!filters.agentInstanceId || job.agentInstanceId === filters.agentInstanceId) &&
         (!filters.taskId || job.taskId === filters.taskId) &&
-        (!filters.kind || job.kind === filters.kind)
+        (!filters.kind || job.kind === filters.kind) &&
+        (!filters.resourceClass || job.resourceClass === filters.resourceClass)
       )
       .sort((a, b) => Date.parse(a.availableAt) - Date.parse(b.availableAt));
 
