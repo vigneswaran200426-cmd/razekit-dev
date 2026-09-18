@@ -96,6 +96,22 @@ export class AppWebRuntime {
     const packageDir = resolveWorkspacePath(this.workspaceRoot, step.outputDir || "artifacts");
     await mkdir(packageDir, { recursive: true });
 
+    let packageMetadata;
+    try {
+      packageMetadata = JSON.parse(await readFile(
+        resolveWorkspacePath(this.workspaceRoot, "package.json"),
+        "utf8"
+      ));
+    } catch {
+      throw new Error("App/Web package step requires package.json");
+    }
+    if (!packageMetadata.name?.trim()) {
+      throw new Error("App/Web package step requires package.json name");
+    }
+    if (!packageMetadata.version?.trim()) {
+      throw new Error("App/Web package step requires package.json version");
+    }
+
     const result = await this.processRuntime.execute({
       id: step.id + "-package",
       kind: "command",
