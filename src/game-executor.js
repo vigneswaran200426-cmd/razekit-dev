@@ -40,6 +40,9 @@ export class GameRuntime {
     this.engineAdapters = engineAdapters instanceof Map
       ? engineAdapters
       : new Map(Object.entries(engineAdapters || {}));
+    for (const adapter of this.engineAdapters.values()) {
+      if (typeof adapter.attachWorkspace === "function") adapter.attachWorkspace(this.workspaceRoot);
+    }
     this.playtestAdapter = playtestAdapter;
     this.packagerAdapter = packagerAdapter;
     this.processRuntime = processRuntime || new LocalProcessRuntime({
@@ -108,7 +111,11 @@ export class GameRuntime {
             context
           });
         }
-        return packageGameWorkspace(this.workspaceRoot, step);
+        return createGameArtifactManifest(this.workspaceRoot, {
+    engine: step.engine || null,
+    artifactName: safeString(step.artifactName, "razekit-game"),
+    outputDir: step.outputDir || "artifacts"
+  });
 
       default:
         throw new Error("Unsupported game step kind: " + step.kind);
