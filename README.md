@@ -142,6 +142,20 @@ The provider-neutral service, browser, database/auth and deployment adapters rem
 
 The actual Unity/Unreal/Godot SDKs and production worker images remain infrastructure concerns. Konami uses explicit adapter bindings so the same execution contract can run against different engine installations without changing the orchestrator.
 
+## Phase 9 — Verification & 100% Completion
+
+- Objective verification runs per task/agent
+- Acceptance criteria are updated from verifier evidence
+- Execution plans must finish with every step passed
+- Test/build/playtest/smoke evidence is checked
+- Deployment evidence is checked when deployment steps exist
+- Artifact evidence is checked against the isolated workspace
+- Hard budget and workspace isolation are verified
+- Failures are categorized by execution domain
+- Verification history is persisted
+- Agent completion now requires a passing verification run plus passed acceptance criteria
+- Manual mutation of acceptance status alone cannot produce 100% completion
+
 ## Next phases
 
 Phase 9 is the next implementation target: Verification and 100% completion.
