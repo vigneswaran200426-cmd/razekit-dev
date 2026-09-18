@@ -20,6 +20,7 @@ export async function provisionModelSessions(agent) {
       ...template,
       id: id("session"),
       state: "ready",
+      contextVersion: 1,
       createdAt: now,
       updatedAt: now,
       lastError: null
@@ -35,6 +36,17 @@ export async function listModelSessions(agentInstanceId) {
   return db.modelSessions.filter(x => x.agentInstanceId === agentInstanceId);
 }
 
+export async function getModelSession(sessionId) {
+  const db = await loadDb();
+  const session = db.modelSessions.find(x => x.id === sessionId);
+  if (!session) return null;
+
+  return {
+    ...session,
+    messages: db.modelMessages.filter(x => x.sessionId === sessionId)
+  };
+}
+
 export async function updateModelSession(sessionId, patch) {
   return transact(db => {
     const session = db.modelSessions.find(x => x.id === sessionId);
@@ -42,6 +54,28 @@ export async function updateModelSession(sessionId, patch) {
 
     Object.assign(session, patch, { updatedAt: new Date().toISOString() });
     return session;
+  });
+}
+
+export async function appendModelMessage(sessionId, role, content, metadata = {}) {
+  if (!content?.trim()) throw new Error("Model message content is required");
+
+  return transact(db => {
+    const session = db.modelSessions.find(x => x.id === sessionId);
+    if (!session) throw new Error("Model session not found");
+
+    const message = {
+      id: id("modelmsg"),
+      sessionId,
+      agentInstanceId: session.agentInstanceId,
+      role,
+      content: content.trim(),
+      metadata,
+      createdAt: new Date().toISOString()
+    };
+
+    db.modelMessages.push(message);
+    return message;
   });
 }
 
