@@ -375,7 +375,7 @@ export async function completeAgent(agentId, resultSummary = "Task completed") {
 
   const verification = await verifyTask(agentId);
   if (verification.status !== "passed") {
-    throw new Error("Agent cannot complete: objective verification failed");
+    throw new Error("Agent cannot complete: objective verification failed; acceptance criteria pass required");
   }
 
   const criteria = await acceptanceForTask(agent.taskId);
