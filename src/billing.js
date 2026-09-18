@@ -47,6 +47,8 @@ export class BillingRegistry {
   }
 }
 
+export const billingRegistry = new BillingRegistry();
+
 export async function reserveSpend(agentId, amount, reason, { idempotencyKey, category = "model", provider = "internal" } = {}) {
   const spend = Number(amount);
   if (!Number.isFinite(spend) || spend < 0) throw new Error("Spend amount must be a non-negative number");
@@ -174,7 +176,7 @@ export async function chargeProvider({
   provider = "internal",
   idempotencyKey
 }) {
-  const registry = chargeProvider.registry;
+  const registry = chargeProvider.registry || billingRegistry;
   const adapter = registry?.get(provider);
   if (!adapter) throw new Error("Billing provider is not configured");
 
