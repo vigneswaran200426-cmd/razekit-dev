@@ -46,6 +46,19 @@ import {
 } from "./credential-vault.js";
 import { ToolAdapterRegistry, ToolBroker } from "./tool-broker.js";
 import { EchoToolAdapter } from "./testing-tool-adapters.js";
+import {
+  createJob,
+  claimNextJob,
+  completeJob,
+  retryJob,
+  blockJob,
+  listJobs,
+  writeCheckpoint,
+  getCheckpoint,
+  recoverExpiredJobs,
+  recoverExpiredWorkers,
+  getCheckpoint as getDurableCheckpoint
+} from "./reliability.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -299,6 +312,68 @@ const server = http.createServer(async (req,res) => {
       if(!task.agentInstanceId)return json(res,409,{error:"Task has no agent instance"});
       const i=await body(req);
       return json(res,201,await addAgentMessage(task.agentInstanceId,"user",i.content,{source:"task-dashboard"}));
+    }
+
+    if(req.method==="POST"&&p==="/internal/jobs"){
+      const i=await body(req);
+      return json(res,201,await createJob(i));
+    }
+
+    if(req.method==="POST"&&p==="/internal/jobs/claim"){
+      const i=await body(req);
+      return json(res,200,await claimNextJob(i.ownerId,i.leaseMs));
+    }
+
+    m=p.match(/^\/internal\/jobs\/([^/]+)\/complete$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await completeJob(m[1],i.leaseId,i.result??null));
+    }
+
+    m=p.match(/^\/internal\/jobs\/([^/]+)\/retry$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await retryJob(m[1],i.leaseId,i.error,i.delayMs));
+    }
+
+    m=p.match(/^\/internal\/jobs\/([^/]+)\/block$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await blockJob(m[1],i.leaseId,i.reason));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/jobs$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listJobs(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/checkpoints$/);
+    if(req.method==="POST"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const i=await body(req);
+      return json(res,201,await writeCheckpoint({
+        agentInstanceId:m[1],
+        taskId:agent.taskId,
+        kind:i.kind,
+        scopeId:i.scopeId||null
+      },i.checkpoint,i.metadata||{}));
+    }
+
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      const kind=u.searchParams.get("kind");
+      if(!kind)return json(res,400,{error:"kind query parameter is required"});
+      return json(res,200,await getDurableCheckpoint(m[1],kind,u.searchParams.get("scopeId")));
+    }
+
+    if(req.method==="POST"&&p==="/internal/recovery/run"){
+      const workers=await recoverExpiredWorkers();
+      const jobs=await recoverExpiredJobs();
+      return json(res,200,{workers,jobs});
     }
 
     if(req.method==="GET"&&p==="/internal/tools"){
