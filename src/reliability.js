@@ -128,15 +128,27 @@ export async function createJob(input = {}) {
   });
 }
 
-export async function claimNextJob(ownerId, leaseMs = DEFAULT_LEASE_MS) {
+export async function claimNextJob(ownerId, leaseMs = DEFAULT_LEASE_MS, filters = {}) {
   if (!ownerId?.trim()) throw new Error("Job lease owner is required");
+  if (filters.agentInstanceId != null && !filters.agentInstanceId.trim()) {
+    throw new Error("agentInstanceId filter must be non-empty");
+  }
+  if (filters.taskId != null && !filters.taskId.trim()) {
+    throw new Error("taskId filter must be non-empty");
+  }
+  if (filters.kind != null && !filters.kind.trim()) {
+    throw new Error("kind filter must be non-empty");
+  }
 
   return transact(db => {
     const now = Date.now();
     const available = db.jobs
       .filter(job =>
         [JOB_STATUS.QUEUED, JOB_STATUS.RETRYING].includes(job.status) &&
-        Date.parse(job.availableAt) <= now
+        Date.parse(job.availableAt) <= now &&
+        (!filters.agentInstanceId || job.agentInstanceId === filters.agentInstanceId) &&
+        (!filters.taskId || job.taskId === filters.taskId) &&
+        (!filters.kind || job.kind === filters.kind)
       )
       .sort((a, b) => Date.parse(a.availableAt) - Date.parse(b.availableAt));
 
