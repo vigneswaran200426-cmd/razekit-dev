@@ -230,7 +230,7 @@ test("blocked jobs release their lease without becoming retryable", async () => 
     agentInstanceId: agent.id,
     kind: "blocked-job"
   });
-  const claimed = await claimNextJob("worker-d", 1000);
+  const claimed = await claimNextJob("worker-d", 1000, { agentInstanceId: agent.id, kind: "blocked-job" });
   const blocked = await blockJob(job.id, claimed.leaseId, "Needs external decision");
 
   assert.equal(blocked.status, "blocked");
