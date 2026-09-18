@@ -107,6 +107,7 @@ test("Niomi builds and executes a repository, implementation, test, build and pa
         path: "package.json",
         content: JSON.stringify({
           name: "niomi-test-site",
+          version: "1.0.0",
           private: true,
           scripts: {
             test: "node --test",
