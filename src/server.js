@@ -29,6 +29,22 @@ import { ModelOrchestrator } from "./model-orchestrator.js";
 import { DeterministicFableAdapter, DeterministicAstraAdapter } from "./testing-model-adapters.js";
 import { listModelSessions } from "./model-sessions.js";
 import { readBlackboard, listContextSnapshots } from "./blackboard.js";
+import { listTools, requiredScopesForTools } from "./tool-registry.js";
+import {
+  approvePermission,
+  denyPermission,
+  getAuthorizationPlan,
+  getPermissions,
+  listPendingRequests,
+  authorizeToolCall
+} from "./permission-broker.js";
+import {
+  registerCredentialReference,
+  listCredentialReferences,
+  revokeCredentialReference
+} from "./credential-vault.js";
+import { ToolAdapterRegistry, ToolBroker } from "./tool-broker.js";
+import { EchoToolAdapter } from "./testing-tool-adapters.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -41,6 +57,13 @@ if (process.env.RAZEKIT_ENABLE_TEST_MODEL_ADAPTERS === "true") {
 }
 
 const modelOrchestrator = new ModelOrchestrator({ registry: modelRegistry });
+const toolAdapterRegistry = new ToolAdapterRegistry();
+
+if (process.env.RAZEKIT_ENABLE_TEST_TOOL_ADAPTERS === "true") {
+  for (const tool of listTools()) toolAdapterRegistry.register(tool.key, new EchoToolAdapter());
+}
+
+const toolBroker = new ToolBroker({ registry: toolAdapterRegistry });
 
 function json(res, status, payload) {
   res.writeHead(status, {"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
@@ -159,7 +182,12 @@ const server = http.createServer(async (req,res) => {
         agentType:agentTypeForTask(i.taskType),
         agentInstanceId:null,
         deadline:i.deadline||null,
-        authorization:{autonomousExecution:true,scopes:pf.authorizationScopes,authorizedAt:now},
+        authorization:{
+          autonomousExecution:true,
+          scopes:pf.authorizationScopes,
+          toolScopes:requiredScopesForTools(i.requestedTools||pf.predictedTools),
+          authorizedAt:now
+        },
         createdAt:now,
         updatedAt:now
       };
@@ -210,7 +238,12 @@ const server = http.createServer(async (req,res) => {
       const task=await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
         if(!t)throw new Error("Task not found");
-        t.authorization={autonomousExecution:true,scopes:i.scopes||t.authorization?.scopes||[],authorizedAt:new Date().toISOString()};
+        t.authorization={
+  autonomousExecution:true,
+  scopes:i.scopes||t.authorization?.scopes||[],
+  toolScopes:t.authorization?.toolScopes||requiredScopesForTools(t.requestedTools||[]),
+  authorizedAt:new Date().toISOString()
+};
         t.status=TASK_STATUS.READY_FOR_AGENT;t.updatedAt=new Date().toISOString();
         return t;
       });
@@ -265,6 +298,65 @@ const server = http.createServer(async (req,res) => {
       if(!task.agentInstanceId)return json(res,409,{error:"Task has no agent instance"});
       const i=await body(req);
       return json(res,201,await addAgentMessage(task.agentInstanceId,"user",i.content,{source:"task-dashboard"}));
+    }
+
+    if(req.method==="GET"&&p==="/internal/tools"){
+      return json(res,200,listTools());
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/permissions$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await getAuthorizationPlan(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/permissions\/pending$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listPendingRequests(m[1]));
+    }
+
+    m=p.match(/^\/internal\/permissions\/([^/]+)\/approve$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await approvePermission(m[1],i.expiresAt||null));
+    }
+
+    m=p.match(/^\/internal\/permissions\/([^/]+)\/deny$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await denyPermission(m[1],i.reason));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/credentials$/);
+    if(req.method==="GET"&&m){
+      const agent=await getAgent(m[1]);
+      if(!agent)return json(res,404,{error:"Agent not found"});
+      return json(res,200,await listCredentialReferences(m[1]));
+    }
+
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,201,await registerCredentialReference(m[1],i));
+    }
+
+    m=p.match(/^\/internal\/credentials\/([^/]+)\/revoke$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await revokeCredentialReference(m[1]));
+    }
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/tools\/invoke$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await toolBroker.invoke({
+        agentInstanceId:m[1],
+        toolKey:i.toolKey,
+        input:i.input||{},
+        scopes:i.scopes||[],
+        credentialProvider:i.credentialProvider||null
+      }));
     }
 
     if(req.method==="POST"&&p==="/internal/agents/process-ready"){
