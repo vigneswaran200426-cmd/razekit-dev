@@ -122,16 +122,21 @@ Niomi capabilities:
 - Workspace path escape protection
 
 ## Phase 8 — Game Execution
-**Status: planned**
+**Status: complete**
 
 Konami capabilities:
-- Unity / Unreal / Godot adapter layer
-- Project initialization
-- Asset pipeline
-- Gameplay implementation
-- Automated playtesting
-- Build/cook/package
-- Game artifact delivery
+- Engine-neutral Unity / Unreal / Godot adapter interface
+- Configurable engine executable, action and build-command bindings
+- Per-agent workspace attachment for engine execution
+- Project initialization contracts
+- Workspace-scoped asset write/copy pipeline
+- Engine action execution
+- Configurable automated playtest checks
+- Build/cook/package adapter boundary
+- Durable game execution checkpoints and run records
+- Artifact manifest generation and file inventory
+- Game execution evidence written to the isolated agent blackboard
+- Engine isolation and workspace escape protection
 
 ## Phase 9 — Verification & 100% Completion
 **Status: planned**
