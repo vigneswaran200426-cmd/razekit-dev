@@ -21,6 +21,10 @@ export class ToolAdapterRegistry {
     if (!adapter) throw new Error("No adapter configured for tool: " + toolKey);
     return adapter;
   }
+
+  has(toolKey) {
+    return this.adapters.has(toolKey);
+  }
 }
 
 export class ToolBroker {
@@ -31,10 +35,11 @@ export class ToolBroker {
 
   async invoke({ agentInstanceId, toolKey, input = {}, scopes = [], credentialProvider = null }) {
     const decision = await authorizeToolCall(agentInstanceId, toolKey, scopes);
+    const taskId = await this.getAgentTaskId(agentInstanceId);
     const baseAudit = {
       id: id("toolcall"),
       agentInstanceId,
-      taskId: (await this.getAgentTaskId(agentInstanceId)),
+      taskId,
       toolKey,
       requestedScopes: decision.requestedScopes,
       createdAt: new Date().toISOString()
@@ -47,21 +52,28 @@ export class ToolBroker {
         missingScopes: decision.missingScopes,
         permissionRequestId: decision.permissionRequest.id
       });
-      return { allowed: false, audit, permissionRequest: decision.permissionRequest };
+      return {
+        allowed: false,
+        audit,
+        permissionRequest: decision.permissionRequest
+      };
     }
 
     const tool = decision.tool;
     let credential = null;
+
     if (tool.credentialScopes.length > 0) {
       credential = await resolveCredentialReference(
         agentInstanceId,
         credentialProvider || tool.key,
         tool.credentialScopes
       );
+
       if (!credential) {
         const audit = await this.audit({
           ...baseAudit,
-          status: "credential_required"
+          status: "credential_required",
+          credentialScopes: tool.credentialScopes
         });
         return {
           allowed: false,
@@ -71,7 +83,17 @@ export class ToolBroker {
       }
     }
 
-    const adapter = this.registry.get(toolKey);
+    let adapter;
+    try {
+      adapter = this.registry.get(toolKey);
+    } catch (error) {
+      const audit = await this.audit({
+        ...baseAudit,
+        status: "adapter_unavailable",
+        error: error.message || "Tool adapter unavailable"
+      });
+      return { allowed: false, audit, adapterUnavailable: true };
+    }
 
     try {
       const result = await adapter.execute({
@@ -95,7 +117,8 @@ export class ToolBroker {
         status: "failed",
         error: error.message || "Tool execution failed"
       });
-      throw Object.assign(error, { toolAuditId: audit.id });
+      error.toolAuditId = audit.id;
+      throw error;
     }
   }
 
