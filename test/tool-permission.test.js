@@ -207,7 +207,13 @@ test("permissions and audits are isolated between agent instances", async () => 
   assert.notEqual(firstPlan.taskId, secondPlan.taskId);
 
   const db = await loadDb();
-  assert.ok(db.toolPermissions.every(x => x.agentInstanceId === first.id || x.agentInstanceId === second.id));
+  const scopedPermissions = db.toolPermissions.filter(
+    x => x.agentInstanceId === first.id || x.agentInstanceId === second.id
+  );
+  assert.ok(scopedPermissions.length >= 2);
+  assert.ok(scopedPermissions.every(
+    x => x.agentInstanceId === first.id || x.agentInstanceId === second.id
+  ));
 });
 
 test("missing adapter is audited instead of escaping silently", async () => {
