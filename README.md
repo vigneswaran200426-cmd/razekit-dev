@@ -169,6 +169,21 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 - Deliverable aggregation from execution artifacts
 - Approve/decline flow for scope changes
 
+## Standalone Frontend
+
+The browser frontend at `/` is complete and standalone. It provides:
+- Task creation with preflight analysis and autonomous authorization
+- Task selection with live 5-second status refresh
+- WORKING / DECISION NEEDED / IMPORTANT UPDATE / BLOCKED / COMPLETED states
+- Chat-based task changes
+- Scope-change approvals and hard-budget escalation
+- Task editing and cancellation
+- Progress, acceptance, budget and verification summaries
+- Deliverable and important-update panels
+- Responsive mobile layout
+- Toast-based error/success feedback
+- No RazeKit integration or external project coupling
+
 ## Phase 11 — Security, Secrets & Billing
 
 - Tenant/user isolation boundary for public task APIs
@@ -204,7 +219,7 @@ Phase 12 is complete. GitHub Actions run 205 passed all 79 tests on Node 24.
 Phase 11 is complete.
 
 Then:
-1. Production worker infrastructure
-2. RazeKit integration
+1. Keep standalone RazeKit DEV isolated and continue internal refinement
+2. Phase 13 RazeKit integration only after explicit authorization
 
 See `ROADMAP.md` for the complete phase contract.
