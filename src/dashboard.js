@@ -2,6 +2,7 @@ import { id, loadDb, transact } from "./store.js";
 import { AGENT_STATUS, TASK_STATUS } from "./domain.js";
 import { latestVerification } from "./verification.js";
 import { addAgentMessage } from "./agent-manager.js";
+import { writeAudit, tenantForTask } from "./tenant-security.js";
 
 export const USER_DASHBOARD_STATUS = {
   WORKING: "WORKING",
@@ -337,6 +338,13 @@ export async function submitUserCommand(taskId, content) {
     impact: change.impact,
     requiresApproval: false
   });
+  await writeAudit({
+    tenantId: await tenantForTask(taskId),
+    action: "task.change.apply",
+    resourceType: "task",
+    resourceId: taskId,
+    metadata: { changeId: change.id, category: change.category }
+  });
   return { mode: "applied", change, analysis };
 }
 
@@ -390,6 +398,13 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
     changeId: result.change.id,
     approved: true
   });
+  await writeAudit({
+    tenantId: await tenantForTask(taskId),
+    action: "task.change.approve",
+    resourceType: "task",
+    resourceId: taskId,
+    metadata: { changeId: result.change.id, budget: result.change.budgetSnapshot }
+  });
   return result;
 }
 
@@ -421,6 +436,15 @@ export async function denyChange(taskId, changeId, reason = "User declined the r
     });
 
     return { change, task, agent };
+  }).then(async result => {
+    await writeAudit({
+      tenantId: result.task.tenantId || "local-tenant",
+      action: "task.change.deny",
+      resourceType: "task",
+      resourceId: taskId,
+      metadata: { changeId: result.change.id, reason }
+    });
+    return result;
   });
 }
 
