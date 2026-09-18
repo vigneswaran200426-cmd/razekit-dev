@@ -126,16 +126,31 @@ Production deployment still requires a real durable database, distributed queue/
 
 The provider-neutral service, browser, database/auth and deployment adapters remain intentionally injectable. Provider-specific production implementations are part of the infrastructure/integration work in later phases.
 
+## Phase 8 — Game Execution
+
+- Engine-neutral Konami execution plans
+- Configurable Unity, Unreal and Godot adapters
+- Engine executable/action/build-command configuration
+- Project initialization contracts
+- Workspace-scoped asset creation and copy pipeline
+- Automated playtest adapter with explicit checks
+- Engine build adapter boundary
+- Durable game execution checkpoints and run records
+- Artifact manifests with file inventory
+- Game execution evidence/results written to the isolated agent blackboard
+- Workspace escape protection
+
+The actual Unity/Unreal/Godot SDKs and production worker images remain infrastructure concerns. Konami uses explicit adapter bindings so the same execution contract can run against different engine installations without changing the orchestrator.
+
 ## Next phases
 
-Phase 8 is the next implementation target: Game execution through Konami.
+Phase 9 is the next implementation target: Verification and 100% completion.
 
 Then:
-1. Game execution
-2. Verification / 100% completion
-3. User dashboard and live task changes
-4. Security, secrets and billing
-5. Production worker infrastructure
-6. RazeKit integration
+1. Verification / 100% completion
+2. User dashboard and live task changes
+3. Security, secrets and billing
+4. Production worker infrastructure
+5. RazeKit integration
 
 See `ROADMAP.md` for the complete phase contract.
