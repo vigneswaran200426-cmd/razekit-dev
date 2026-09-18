@@ -9,7 +9,7 @@ import {
   toolManifestForTask
 } from "./domain.js";
 import { WORKER_RUNTIME_STATE } from "./runtime-domain.js";
-import { spawnAgentForTask, startAgent } from "./agent-manager.js";
+import { startAgent } from "./agent-manager.js";
 import { recoverExpiredWorkerLease } from "./worker-runtime.js";
 
 export const JOB_STATUS = {
@@ -426,7 +426,7 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
       agentInstanceId: null,
       runtime: agentType === AGENT_TYPES.KONAMI ? "game-worker" : "app-web-worker",
       status: WORKER_STATUS.READY,
-      runtimeState: RUNTIME.READY,
+      runtimeState: WORKER_RUNTIME_STATE.READY,
       heartbeatAt: now,
       leaseId: null,
       leaseOwner: null,
@@ -486,7 +486,7 @@ async function spawnAgentForTaskForRecovery(task, previousAgentId) {
       metadata: {
         recovery: true,
         previousAgentId,
-        checkpointAvailable: Boolean(db.workers.find(x => x.id === previousAgentId)?.checkpoint)
+        checkpointAvailable: Boolean(previousWorker?.checkpoint)
       },
       createdAt: now
     });
