@@ -2,6 +2,15 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { id } from "./store.js";
 
+// An artifact manifest is consumed off the machine that produced it — by the
+// dashboard, by verification, by whoever downloads the build. Recording
+// `game\assets\player.asset` because the worker happened to be Windows would
+// make the manifest unreadable to every other reader, so paths are always
+// written POSIX-style.
+function manifestPath(root, fullPath) {
+  return path.relative(root, fullPath).split(path.sep).join("/");
+}
+
 async function collectFiles(root, current, output = []) {
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
@@ -12,7 +21,7 @@ async function collectFiles(root, current, output = []) {
     } else if (entry.isFile()) {
       const info = await stat(fullPath);
       output.push({
-        path: path.relative(root, fullPath),
+        path: manifestPath(root, fullPath),
         sizeBytes: info.size
       });
     }
@@ -43,15 +52,15 @@ export async function createGameArtifactManifest(workspaceRoot, {
     fileCount: files.length,
     files
   };
-  const manifestPath = path.join(destination, artifactId + ".manifest.json");
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  const manifestFile = path.join(destination, artifactId + ".manifest.json");
+  await writeFile(manifestFile, JSON.stringify(manifest, null, 2), "utf8");
 
   return {
     artifactId,
     artifactName,
     engine,
-    outputDir: path.relative(root, destination),
-    manifest: path.relative(root, manifestPath),
+    outputDir: manifestPath(root, destination),
+    manifest: manifestPath(root, manifestFile),
     fileCount: files.length
   };
 }
