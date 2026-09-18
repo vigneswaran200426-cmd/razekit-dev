@@ -120,7 +120,7 @@ test("Niomi builds and executes a repository, implementation, test, build and pa
         kind: APP_WEB_STEP_KINDS.WORKSPACE_WRITE_FILE,
         phase: "implementation",
         path: "src/index.js",
-        content: "export const answer = 42;\n",
+        content: "exports.answer = 42;\n",
         retries: 0
       },
       {
@@ -128,7 +128,7 @@ test("Niomi builds and executes a repository, implementation, test, build and pa
         kind: APP_WEB_STEP_KINDS.WORKSPACE_WRITE_FILE,
         phase: "implementation",
         path: "index.test.js",
-        content: "import test from 'node:test'; import assert from 'node:assert/strict'; import { answer } from './src/index.js'; test('app',()=>assert.equal(answer,42));\n",
+        content: "const test = require('node:test'); const assert = require('node:assert/strict'); const { answer } = require('./src/index.js'); test('app',()=>assert.equal(answer,42));\n",
         retries: 0
       },
       {
