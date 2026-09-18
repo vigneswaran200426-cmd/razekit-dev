@@ -6,7 +6,11 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
+const SCHEMA_VERSION = 2;
+
 const initialState = {
+  schemaVersion: SCHEMA_VERSION,
+  migrationsApplied: ["initial"],
   tasks: [],
   taskFiles: [],
   acceptanceCriteria: [],
@@ -29,9 +33,15 @@ const initialState = {
 
 function migrateState(raw) {
   const db = raw && typeof raw === "object" ? raw : {};
+  if (!Array.isArray(db.migrationsApplied)) db.migrationsApplied = ["initial"];
   for (const [key, value] of Object.entries(initialState)) {
+    if (key === "schemaVersion" || key === "migrationsApplied") continue;
     if (!Array.isArray(db[key])) db[key] = [...value];
   }
+  if (!db.migrationsApplied.includes("phase-6-reliability")) {
+    db.migrationsApplied.push("phase-6-reliability");
+  }
+  db.schemaVersion = SCHEMA_VERSION;
   return db;
 }
 
