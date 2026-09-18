@@ -291,6 +291,18 @@ export async function recordSpend(agentId, amount, reason = "billable action") {
     const agent = db.agentInstances.find(x => x.id === agentId);
     if (!agent) throw new Error("Agent instance not found");
 
+    const tenantId = db.tasks.find(x => x.id === agent.taskId)?.tenantId || "local-tenant";
+    const tenant = db.tenants.find(x => x.id === tenantId);
+    const hourlyLimit = Number(tenant?.limits?.spendPerHour);
+    if (Number.isFinite(hourlyLimit)) {
+      const recentSpend = db.billingLedger
+        .filter(item => item.tenantId === tenantId && Date.parse(item.createdAt) >= Date.now() - 3_600_000)
+        .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      if (recentSpend + spend > hourlyLimit) {
+        throw new Error("Abuse limit exceeded: spendPerHour");
+      }
+    }
+
     const nextSpend = Number(agent.budgetUsed || 0) + spend;
     if (nextSpend > Number(agent.budgetLimit)) {
       throw new Error("Hard budget limit exceeded");
