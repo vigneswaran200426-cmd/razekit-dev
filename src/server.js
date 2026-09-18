@@ -2,18 +2,37 @@ import http from "node:http";
 import { URL } from "node:url";
 import { loadDb, transact, id } from "./store.js";
 import { TASK_TYPES, TASK_STATUS, agentTypeForTask, buildPreflight } from "./domain.js";
-import { spawnAgentForTask, startAgent, heartbeatAgent, cancelAgent, listAgents, getAgent, completeAgent } from "./agent-manager.js";
+import {
+  spawnAgentForTask,
+  startAgent,
+  heartbeatAgent,
+  cancelAgent,
+  listAgents,
+  getAgent,
+  completeAgent,
+  addAgentMessage,
+  processReadyTasks
+} from "./agent-manager.js";
+import { checkBudget, charge } from "./budget-manager.js";
+import { createRuntimeCoordinator } from "./runtime-coordinator.js";
 
 const PORT = Number(process.env.PORT || 3000);
+const runtimeCoordinator = createRuntimeCoordinator();
 
 function json(res, status, payload) {
   res.writeHead(status, {"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
   res.end(JSON.stringify(payload, null, 2));
 }
+
 async function body(req) {
   let raw = "";
   for await (const chunk of req) raw += chunk;
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("Request body must be valid JSON");
+  }
 }
 
 const page = `<!doctype html>
@@ -25,28 +44,49 @@ body{font-family:system-ui,sans-serif;max-width:1050px;margin:40px auto;padding:
 input,textarea,select,button{font:inherit;width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border:1px solid #cbd5e1;border-radius:10px}
 textarea{min-height:130px}button{background:#172033;color:#fff;border:0;cursor:pointer}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}pre{white-space:pre-wrap;word-break:break-word}
+.status{padding:8px 10px;border-radius:8px;background:#eef2ff;margin:8px 0}
 @media(max-width:700px){.row{grid-template-columns:1fr}}
 </style></head><body>
 <h1>RazeKit DEV</h1>
-<p>Phase 1 task creation + Phase 2 independent Niomi/Konami Agent Manager.</p>
+<p>Task creation + independent Niomi/Konami agent orchestration.</p>
 <div class="card">
 <h2>Create Task</h2>
-<div class="row"><div><label>Type</label><select id="type"><option value="app">App</option><option value="website">Website</option><option value="game">Game</option></select></div>
-<div><label>Title</label><input id="title" placeholder="Build my product"></div></div>
+<div class="row">
+<div><label>Type</label><select id="type"><option value="app">App</option><option value="website">Website</option><option value="game">Game</option></select></div>
+<div><label>Title</label><input id="title" placeholder="Build my product"></div>
+</div>
 <label>Request</label><textarea id="request"></textarea>
-<label>Maximum budget (USD)</label><input id="budget" type="number" min="1" value="50">
-<button onclick="analyze()">Run Preflight</button><pre id="analysis"></pre>
-<button onclick="createTask()">Create Authorized Task</button>
+<label>Hard maximum budget (USD)</label><input id="budget" type="number" min="1" value="50">
+<button onclick="analyze()">Run Preflight</button>
+<pre id="analysis"></pre>
+<button onclick="createTask()">Authorize + Create Task</button>
 </div>
 <div class="card"><h2>Tasks</h2><button onclick="loadTasks()">Refresh</button><pre id="tasks"></pre></div>
 <div class="card"><h2>Agent Manager</h2><button onclick="loadAgents()">Refresh</button><pre id="agents"></pre></div>
 <script>
 let pf=null;
-async function api(p,o={}){const r=await fetch(p,{headers:{'Content-Type':'application/json'},...o});const d=await r.json();if(!r.ok)throw new Error(d.error||JSON.stringify(d));return d}
-async function analyze(){try{pf=await api('/api/tasks/analyze',{method:'POST',body:JSON.stringify({taskType:type.value,title:title.value,originalRequest:request.value})});analysis.textContent=JSON.stringify(pf,null,2)}catch(e){analysis.textContent=e.message}}
-async function createTask(){try{const d=await api('/api/tasks',{method:'POST',body:JSON.stringify({taskType:type.value,title:title.value,originalRequest:request.value,specification:request.value,maxBudget:Number(budget.value),acceptAutonomousExecution:true,requestedTools:pf?.predictedTools||[]})});alert('Created '+d.id);loadTasks()}catch(e){alert(e.message)}}
-async function loadTasks(){tasks.textContent=JSON.stringify(await api('/api/tasks'),null,2)}
-async function loadAgents(){agents.textContent=JSON.stringify(await api('/internal/agents'),null,2)}
+async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});const d=await r.json();if(!r.ok)throw new Error(d.error||JSON.stringify(d));return d}
+async function analyze(){
+  try{
+    pf=await api("/api/tasks/analyze",{method:"POST",body:JSON.stringify({taskType:type.value,title:title.value,originalRequest:request.value})});
+    analysis.textContent=JSON.stringify(pf,null,2);
+  }catch(e){analysis.textContent=e.message}
+}
+async function createTask(){
+  try{
+    if(!pf) await analyze();
+    const d=await api("/api/tasks",{method:"POST",body:JSON.stringify({
+      taskType:type.value,title:title.value,originalRequest:request.value,
+      specification:request.value,maxBudget:Number(budget.value),
+      acceptAutonomousExecution:true,requestedTools:pf?.predictedTools||[],
+      acceptanceCriteria:["Task requirements satisfied","Required build/tests pass"]
+    })});
+    alert("Created "+d.task.id+" -> "+d.agent.agentType);
+    loadTasks();loadAgents();
+  }catch(e){alert(e.message)}
+}
+async function loadTasks(){tasks.textContent=JSON.stringify(await api("/api/tasks"),null,2)}
+async function loadAgents(){agents.textContent=JSON.stringify(await api("/internal/agents"),null,2)}
 loadTasks();loadAgents();
 </script></body></html>`;
 
@@ -55,34 +95,39 @@ const server = http.createServer(async (req,res) => {
     const u = new URL(req.url, "http://" + (req.headers.host || "localhost"));
     const p = u.pathname;
 
+    if (req.method === "GET" && p === "/health") {
+      return json(res,200,{ok:true,service:"razekit-dev",time:new Date().toISOString()});
+    }
+
     if (req.method === "GET" && p === "/") {
       res.writeHead(200, {"Content-Type":"text/html; charset=utf-8"});
       return res.end(page);
     }
 
     if (req.method === "POST" && p === "/api/tasks/analyze") {
-      const i = await body(req);
-      if (!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
-      return json(res,200,buildPreflight({taskType:i.taskType,title:i.title||"",originalRequest:i.originalRequest||"",specification:i.specification||""}));
+      const i=await body(req);
+      if(!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
+      if(!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
+      return json(res,200,buildPreflight(i));
     }
 
     if (req.method === "POST" && p === "/api/tasks") {
-      const i = await body(req);
-      if (!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
-      if (!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
-      if (!Number.isFinite(Number(i.maxBudget)) || Number(i.maxBudget) <= 0) return json(res,400,{error:"maxBudget must be greater than zero"});
-      if (!i.acceptAutonomousExecution) return json(res,400,{error:"Autonomous execution authorization is required"});
+      const i=await body(req);
+      if(!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
+      if(!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
+      if(!Number.isFinite(Number(i.maxBudget))||Number(i.maxBudget)<=0) return json(res,400,{error:"maxBudget must be greater than zero"});
+      if(!i.acceptAutonomousExecution) return json(res,400,{error:"Autonomous execution authorization is required"});
 
-      const now = new Date().toISOString();
-      const pf = buildPreflight(i);
-      const task = {
+      const now=new Date().toISOString();
+      const pf=buildPreflight(i);
+      const task={
         id:id("task"),
         userId:i.userId||"local-user",
         taskType:i.taskType,
         title:i.title||"Untitled task",
         originalRequest:i.originalRequest.trim(),
         specification:i.specification||i.originalRequest.trim(),
-        requestedTools:i.requestedTools||[],
+        requestedTools:i.requestedTools||pf.predictedTools,
         estimatedBudget:pf.estimatedBudget,
         maxBudget:Number(i.maxBudget),
         actualSpend:0,
@@ -96,88 +141,126 @@ const server = http.createServer(async (req,res) => {
         updatedAt:now
       };
 
-      await transact(db => {
+      await transact(db=>{
         db.tasks.push(task);
-        for (const criterion of (i.acceptanceCriteria||[])) {
+        for(const criterion of (i.acceptanceCriteria||[])){
           db.acceptanceCriteria.push({id:id("ac"),taskId:task.id,text:String(criterion),status:"pending"});
         }
       });
-      return json(res,201,task);
+
+      const agent=await spawnAgentForTask(task.id);
+      const started=await startAgent(agent.id);
+      return json(res,201,{task:await getTask(task.id),agent:started});
     }
 
     if (req.method === "GET" && p === "/api/tasks") {
-      const db = await loadDb();
-      return json(res,200,db.tasks.map(t => ({...t,agent:t.agentInstanceId ? (db.agentInstances.find(a=>a.id===t.agentInstanceId)||null) : null})));
+      const db=await loadDb();
+      return json(res,200,db.tasks.map(t=>({
+        ...t,
+        agent:t.agentInstanceId?(db.agentInstances.find(a=>a.id===t.agentInstanceId)||null):null
+      })));
     }
 
-    let m = p.match(/^\/api\/tasks\/([^/]+)$/);
-    if (req.method === "GET" && m) {
-      const db = await loadDb();
-      const t = db.tasks.find(x=>x.id===m[1]);
-      if (!t) return json(res,404,{error:"Task not found"});
-      return json(res,200,t);
+    let m=p.match(/^\/api\/tasks\/([^/]+)$/);
+    if(req.method==="GET"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      return json(res,200,task);
     }
 
-    if (req.method === "PATCH" && m) {
-      const i = await body(req);
-      return json(res,200,await transact(db => {
-        const t = db.tasks.find(x=>x.id===m[1]);
-        if (!t) throw new Error("Task not found");
-        for (const [key,value] of Object.entries(i)) {
-          if (!["id","agentInstanceId","agentType","createdAt"].includes(key) && value !== undefined) t[key]=value;
-        }
-        t.updatedAt = new Date().toISOString();
-        return t;
-      }));
-    }
-
-    m = p.match(/^\/api\/tasks\/([^/]+)\/authorize$/);
-    if (req.method === "POST" && m) {
+    if(req.method==="PATCH"&&m){
       const i=await body(req);
-      return json(res,200,await transact(db => {
+      return json(res,200,await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
-        if(!t) throw new Error("Task not found");
-        t.authorization={autonomousExecution:true,scopes:i.scopes||t.authorization?.scopes||[],authorizedAt:new Date().toISOString()};
-        t.status=TASK_STATUS.READY_FOR_AGENT;
+        if(!t)throw new Error("Task not found");
+        for(const [key,value] of Object.entries(i)){
+          if(!["id","agentInstanceId","agentType","createdAt","status"].includes(key)&&value!==undefined)t[key]=value;
+        }
         t.updatedAt=new Date().toISOString();
         return t;
       }));
     }
 
-    m = p.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
-    if (req.method === "POST" && m) {
-      const t=await transact(db=>{
-        const x=db.tasks.find(x=>x.id===m[1]);
-        if(!x) throw new Error("Task not found");
-        x.status=TASK_STATUS.CANCELLED;x.updatedAt=new Date().toISOString();return x;
+    m=p.match(/^\/api\/tasks\/([^/]+)\/authorize$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      const task=await transact(db=>{
+        const t=db.tasks.find(x=>x.id===m[1]);
+        if(!t)throw new Error("Task not found");
+        t.authorization={autonomousExecution:true,scopes:i.scopes||t.authorization?.scopes||[],authorizedAt:new Date().toISOString()};
+        t.status=TASK_STATUS.READY_FOR_AGENT;t.updatedAt=new Date().toISOString();
+        return t;
       });
-      if(t.agentInstanceId) try { await cancelAgent(t.agentInstanceId,"Task cancelled by user"); } catch {}
-      return json(res,200,t);
+      const agent=await spawnAgentForTask(task.id);
+      const started=agent.status==="running"?agent:await startAgent(agent.id);
+      return json(res,200,{task:await getTask(task.id),agent:started});
     }
 
-    m = p.match(/^\/api\/tasks\/([^/]+)\/progress$/);
-    if (req.method === "GET" && m) {
-      const db=await loadDb(); const t=db.tasks.find(x=>x.id===m[1]);
-      if(!t) return json(res,404,{error:"Task not found"});
+    m=p.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
+    if(req.method==="POST"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      if(task.agentInstanceId)await cancelAgent(task.agentInstanceId,"Task cancelled by user");
+      else await transact(db=>{
+        const t=db.tasks.find(x=>x.id===m[1]);
+        if(t){t.status=TASK_STATUS.CANCELLED;t.updatedAt=new Date().toISOString();}
+      });
+      return json(res,200,await getTask(m[1]));
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/progress$/);
+    if(req.method==="GET"&&m){
+      const db=await loadDb();const t=db.tasks.find(x=>x.id===m[1]);
+      if(!t)return json(res,404,{error:"Task not found"});
       const a=t.agentInstanceId?db.agentInstances.find(x=>x.id===t.agentInstanceId):null;
-      return json(res,200,{taskId:t.id,taskStatus:t.status,agentStatus:a?.status||null,agentType:a?.agentType||null,budgetUsed:a?.budgetUsed??t.actualSpend,budgetLimit:t.maxBudget,heartbeat:a?.lastHeartbeat||null});
+      return json(res,200,{
+        taskId:t.id,taskStatus:t.status,agentStatus:a?.status||null,
+        agentType:a?.agentType||null,budgetUsed:a?.budgetUsed??t.actualSpend,
+        budgetLimit:t.maxBudget,heartbeat:a?.lastHeartbeat||null
+      });
     }
 
-    if (req.method === "GET" && m && false) {}
-
-    if (req.method === "POST" && p === "/internal/agents/spawn") {
-      const i=await body(req); return json(res,201,await spawnAgentForTask(i.taskId));
+    m=p.match(/^\/api\/tasks\/([^/]+)\/messages$/);
+    if(req.method==="POST"&&m){
+      const task=await getTask(m[1]);
+      if(!task)return json(res,404,{error:"Task not found"});
+      if(!task.agentInstanceId)return json(res,409,{error:"Task has no agent instance"});
+      const i=await body(req);
+      return json(res,201,await addAgentMessage(task.agentInstanceId,"user",i.content,{source:"task-dashboard"}));
     }
-    if (req.method === "GET" && p === "/internal/agents") return json(res,200,await listAgents());
+
+    if(req.method==="POST"&&p==="/internal/agents/process-ready"){
+      return json(res,200,await processReadyTasks());
+    }
+
+    if(req.method==="GET"&&p==="/internal/agents"){
+      return json(res,200,await listAgents());
+    }
+
+    if(req.method==="POST"&&p==="/internal/agents/spawn"){
+      const i=await body(req);
+      return json(res,201,await spawnAgentForTask(i.taskId));
+    }
 
     m=p.match(/^\/internal\/agents\/([^/]+)$/);
-    if(req.method==="GET"&&m){const a=await getAgent(m[1]);if(!a)return json(res,404,{error:"Agent not found"});return json(res,200,a);}
+    if(req.method==="GET"&&m){
+      const a=await getAgent(m[1]);
+      if(!a)return json(res,404,{error:"Agent not found"});
+      return json(res,200,a);
+    }
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/start$/);
-    if(req.method==="POST"&&m) return json(res,200,await startAgent(m[1]));
+    if(req.method==="POST"&&m)return json(res,200,await startAgent(m[1]));
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/heartbeat$/);
     if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await heartbeatAgent(m[1],i));}
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/messages$/);
+    if(req.method==="GET"&&m){
+      const a=await getAgent(m[1]);
+      if(!a)return json(res,404,{error:"Agent not found"});
+      return json(res,200,a.messages);
+    }
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/cancel$/);
     if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await cancelAgent(m[1],i.reason));}
@@ -185,16 +268,39 @@ const server = http.createServer(async (req,res) => {
     m=p.match(/^\/internal\/agents\/([^/]+)\/complete$/);
     if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await completeAgent(m[1],i.resultSummary));}
 
+    m=p.match(/^\/internal\/agents\/([^/]+)\/spend-check$/);
+    if(req.method==="POST"&&m){const i=await body(req);return json(res,200,await checkBudget(m[1],i.amount));}
+
+    m=p.match(/^\/internal\/agents\/([^/]+)\/charge$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await charge(m[1],i.amount,i.reason));
+    }
+
     m=p.match(/^\/internal\/agents\/([^/]+)\/workspace$/);
-    if(req.method==="GET"&&m){const a=await getAgent(m[1]);if(!a)return json(res,404,{error:"Agent not found"});return json(res,200,a.workspace);}
+    if(req.method==="GET"&&m){
+      const a=await getAgent(m[1]);
+      if(!a)return json(res,404,{error:"Agent not found"});
+      return json(res,200,a.workspace);
+    }
 
-    m=p.match(/^\/internal\/agents\/([^/]+)\/messages$/);
-    if(req.method==="GET"&&m){const a=await getAgent(m[1]);if(!a)return json(res,404,{error:"Agent not found"});return json(res,200,a.messages);}
-
+    runtimeCoordinator.start();
     return json(res,404,{error:"Not found"});
   } catch(e) {
     return json(res,400,{error:e.message||"Unexpected error"});
   }
 });
 
-server.listen(PORT,()=>console.log("RazeKit DEV listening on http://localhost:"+PORT));
+function getTask(taskId){
+  return loadDb().then(db=>{
+    const t=db.tasks.find(x=>x.id===taskId);
+    if(!t)return null;
+    return {
+      ...t,
+      acceptanceCriteria:db.acceptanceCriteria.filter(x=>x.taskId===taskId),
+      agent:t.agentInstanceId?(db.agentInstances.find(a=>a.id===t.agentInstanceId)||null):null
+    };
+  });
+}
+
+server.listen(PORT,()=>runtimeCoordinator.start());
