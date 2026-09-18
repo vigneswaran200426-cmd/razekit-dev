@@ -16,6 +16,14 @@ import {
   acceptanceForTask
 } from "./agent-manager.js";
 import { checkBudget, charge } from "./budget-manager.js";
+import {
+  leaseWorker,
+  renewWorkerLease,
+  releaseWorkerLease,
+  checkpointWorker,
+  getWorkerRuntime,
+  recoverExpiredWorkerLease
+} from "./worker-runtime.js";
 import { createRuntimeCoordinator } from "./runtime-coordinator.js";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -292,6 +300,42 @@ const server = http.createServer(async (req,res) => {
     if(req.method==="POST"&&m){
       const i=await body(req);
       return json(res,200,await charge(m[1],i.amount,i.reason));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/lease$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await leaseWorker(m[1],i.ownerId,i.leaseMs));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/lease\/renew$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await renewWorkerLease(m[1],i.leaseId,i.leaseMs));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/lease\/release$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await releaseWorkerLease(m[1],i.leaseId,i.finalState));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/checkpoint$/);
+    if(req.method==="POST"&&m){
+      const i=await body(req);
+      return json(res,200,await checkpointWorker(m[1],i.leaseId,i.checkpoint));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/recover$/);
+    if(req.method==="POST"&&m){
+      return json(res,200,await recoverExpiredWorkerLease(m[1]));
+    }
+
+    m=p.match(/^\/internal\/workers\/([^/]+)\/runtime$/);
+    if(req.method==="GET"&&m){
+      const runtime=await getWorkerRuntime(m[1]);
+      if(!runtime)return json(res,404,{error:"Worker not found"});
+      return json(res,200,runtime);
     }
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/workspace$/);
