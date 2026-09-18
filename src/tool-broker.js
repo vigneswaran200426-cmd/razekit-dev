@@ -1,7 +1,7 @@
 import { id, loadDb, transact } from "./store.js";
 import { authorizeToolCall } from "./permission-broker.js";
 import { getTool } from "./tool-registry.js";
-import { resolveCredentialReference } from "./credential-vault.js";
+import { resolveCredentialReference, requestCredentialReference } from "./credential-vault.js";
 
 export class ToolAdapterRegistry {
   constructor() {
@@ -70,15 +70,22 @@ export class ToolBroker {
       );
 
       if (!credential) {
+        const credentialRequest = await requestCredentialReference(
+          agentInstanceId,
+          credentialProvider || tool.key,
+          tool.credentialScopes
+        );
         const audit = await this.audit({
           ...baseAudit,
           status: "credential_required",
-          credentialScopes: tool.credentialScopes
+          credentialScopes: tool.credentialScopes,
+          credentialRequestId: credentialRequest.id
         });
         return {
           allowed: false,
           audit,
-          credentialRequired: tool.credentialScopes
+          credentialRequired: tool.credentialScopes,
+          credentialRequest
         };
       }
     }
