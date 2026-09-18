@@ -27,9 +27,9 @@ export function buildContainerSpec({
     workspacePath,
     networkPolicyId,
     resources: {
-      cpu: Math.max(0.1, Number(cpu)),
-      memoryMiB: Math.max(128, Number(memoryMiB)),
-      pidsLimit: Math.max(64, Math.floor(Number(pidsLimit)))
+      cpu: numericCpu,
+      memoryMiB: numericMemory,
+      pidsLimit: Math.floor(numericPids)
     },
     security: {
       privileged: false,
@@ -61,6 +61,10 @@ export class ContainerRuntimeDriver {
   async remove() {
     throw new Error("ContainerRuntimeDriver.remove() is not implemented");
   }
+
+  async execute() {
+    throw new Error("ContainerRuntimeDriver.execute() is not implemented");
+  }
 }
 
 export class DockerContainerRuntime extends ContainerRuntimeDriver {
@@ -74,6 +78,11 @@ export class DockerContainerRuntime extends ContainerRuntimeDriver {
     const container = await this.driver.create(spec);
     await this.driver.start(container.id);
     return { runtimeId: container.id, runtime: "container", status: "running" };
+  }
+
+  async execute(runtimeId, command) {
+    if (typeof this.driver.execute !== "function") throw new Error("Container runtime driver execute() is required");
+    return this.driver.execute(runtimeId, command);
   }
 
   async terminate(runtimeId) {
@@ -98,6 +107,10 @@ export function buildMicroVMRuntimeSpec({
   if (!rootDisk?.trim()) throw new Error("MicroVM rootDisk is required");
   if (!workspaceDisk?.trim()) throw new Error("MicroVM workspaceDisk is required");
   if (!networkPolicyId?.trim()) throw new Error("MicroVM networkPolicyId is required");
+  const numericVcpus = Number(vcpus);
+  const numericMemory = Number(memoryMiB);
+  if (!Number.isFinite(numericVcpus) || numericVcpus < 1) throw new Error("MicroVM vcpus must be at least 1");
+  if (!Number.isFinite(numericMemory) || numericMemory < 256) throw new Error("MicroVM memory must be at least 256MiB");
 
   return {
     runtime: "microvm",
@@ -107,8 +120,8 @@ export function buildMicroVMRuntimeSpec({
     workspaceDisk,
     networkPolicyId,
     resources: {
-      vcpus: Math.max(1, Math.floor(Number(vcpus))),
-      memoryMiB: Math.max(256, Number(memoryMiB))
+      vcpus: Math.floor(numericVcpus),
+      memoryMiB: numericMemory
     },
     gpu: gpu ? {
       vendor: gpu.vendor,
@@ -133,6 +146,10 @@ export class MicroVMRuntimeDriver {
   async destroy() {
     throw new Error("MicroVMRuntimeDriver.destroy() is not implemented");
   }
+
+  async execute() {
+    throw new Error("MicroVMRuntimeDriver.execute() is not implemented");
+  }
 }
 
 export class FirecrackerMicroVMRuntime extends MicroVMRuntimeDriver {
@@ -146,6 +163,11 @@ export class FirecrackerMicroVMRuntime extends MicroVMRuntimeDriver {
     const vm = await this.driver.create(spec);
     await this.driver.start(vm.id);
     return { runtimeId: vm.id, runtime: "microvm", status: "running" };
+  }
+
+  async execute(runtimeId, command) {
+    if (typeof this.driver.execute !== "function") throw new Error("MicroVM runtime driver execute() is required");
+    return this.driver.execute(runtimeId, command);
   }
 
   async terminate(runtimeId) {
