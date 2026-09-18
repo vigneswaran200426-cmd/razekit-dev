@@ -92,7 +92,7 @@ function classifyChange(content) {
   const text = content.trim();
   const scopeMatch = SCOPE_CHANGE_PATTERNS.find(pattern => pattern.test(text));
   if (scopeMatch) {
-    const highRisk = /payment|razorpay|stripe|cashfree|credential|api key|secret|oauth|authentication|database|deploy|deployment|external api|third[- ]party|multiplayer/i.test(text);
+    const highRisk = /payment|razorpay|stripe|cashfree|credential|api key|secret|oauth|authentication|database|deploy|deployment|external api|third[- ]party/i.test(text);
     return {
       category: "scope",
       impact: highRisk ? "high" : "medium",
