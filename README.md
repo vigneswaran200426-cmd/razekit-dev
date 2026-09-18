@@ -188,10 +188,7 @@ The actual Unity/Unreal/Godot SDKs and production worker images remain infrastru
 Phase 11 is complete.
 
 Then:
-1. Security, secrets and billing
-2. Production worker infrastructure
-3. RazeKit integration
-
-See `ROADMAP.md` for the complete phase contract.
+1. Production worker infrastructure
+2. RazeKit integration
 
 See `ROADMAP.md` for the complete phase contract.
