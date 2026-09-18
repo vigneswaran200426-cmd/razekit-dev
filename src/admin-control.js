@@ -94,9 +94,15 @@ export async function resumeTenant(tenantId, actor = "admin") {
     }
     for (const agent of db.agentInstances) {
       const task = db.tasks.find(item => item.id === agent.taskId);
-      if (task && (task.tenantId || "local-tenant") === tenantId && agent.status === AGENT_STATUS.BLOCKED) {
+      if (
+        task &&
+        (task.tenantId || "local-tenant") === tenantId &&
+        agent.status === AGENT_STATUS.BLOCKED &&
+        agent.blockedReason === "tenant_suspended"
+      ) {
         agent.status = AGENT_STATUS.RUNNING;
         agent.executionState = "running";
+        agent.blockedReason = null;
       }
     }
 
@@ -134,9 +140,12 @@ export async function updateTenantLimits(tenantId, limits, actor = "admin") {
 }
 
 export async function adminRevokeCredential(credentialId, actor = "admin") {
+  const before = await loadDb();
+  const existing = before.credentials.find(item => item.id === credentialId);
+  if (!existing) throw new Error("Credential reference not found");
   const credential = await revokeCredentialReference(credentialId);
   await writeAudit({
-    tenantId: "unknown",
+    tenantId: existing.tenantId || "local-tenant",
     userId: actor,
     action: "credential.revoke",
     resourceType: "credential",
