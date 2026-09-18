@@ -86,6 +86,7 @@ export async function spawnAgentForTask(taskId) {
     const agent = {
       id: id(agentType),
       taskId,
+      tenantId: freshTask.tenantId || "local-tenant",
       agentType,
       status: AGENT_STATUS.READY,
       workspaceId: workspace.id,
@@ -305,11 +306,28 @@ export async function recordSpend(agentId, amount, reason = "billable action") {
     const event = {
       id: id("spend"),
       agentInstanceId: agent.id,
+      taskId: agent.taskId,
+      tenantId: task?.tenantId || "local-tenant",
       amount: spend,
       reason,
       totalAfter: nextSpend,
       createdAt: new Date().toISOString()
     };
+
+    db.billingLedger.push({
+      id: id("bledger"),
+      tenantId: task?.tenantId || "local-tenant",
+      taskId: agent.taskId,
+      agentInstanceId: agent.id,
+      reservationId: null,
+      provider: "internal",
+      category: "agent",
+      amount: spend,
+      currency: task?.currency || "USD",
+      reason,
+      idempotencyKey: event.id,
+      createdAt: event.createdAt
+    });
 
     db.agentMessages.push({
       id: id("msg"),
