@@ -103,6 +103,43 @@ test("completion requires acceptance criteria to pass", async () => {
 
   const { setAcceptanceCriterion } = await import("../src/agent-manager.js");
   await setAcceptanceCriterion(task.id, criterion.id, "passed", "Test passed");
+
+  const workspace = (await getAgent(agent.id)).workspace.path;
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(path.join(workspace, "artifacts"), { recursive: true });
+  await writeFile(path.join(workspace, "artifacts", "verified.tgz"), "artifact");
+
+  await transact(db => {
+    db.executionRuns.push({
+      id: id("run"),
+      taskId: task.id,
+      agentInstanceId: agent.id,
+      kind: "app_web",
+      status: "completed",
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      result: {
+        status: "completed",
+        plan: {
+          id: "verified-completion-plan",
+          steps: [
+            { id: "test", kind: "command", phase: "test", state: "passed" },
+            { id: "build", kind: "command", phase: "build", state: "passed" },
+            {
+              id: "package",
+              kind: "package",
+              phase: "package",
+              state: "passed",
+              result: { outputDir: "artifacts", files: ["verified.tgz"] }
+            }
+          ]
+        }
+      },
+      error: null,
+      artifacts: []
+    });
+  });
+
   const completed = await completeAgent(agent.id, "Test completed");
 
   assert.equal(completed.status, AGENT_STATUS.COMPLETED);
