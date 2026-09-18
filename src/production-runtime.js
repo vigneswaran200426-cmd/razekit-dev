@@ -185,39 +185,49 @@ export async function heartbeatProductionWorker(workerId, metadata = {}) {
 
 export async function claimProductionJob(poolId, ownerId, leaseMs = 30_000) {
   if (!ownerId?.trim()) throw new Error("Production worker owner is required");
+  const lease = Math.max(1000, Number(leaseMs));
 
-  const db = await loadDb();
-  const pool = db.workerPools.find(item => item.id === poolId);
-  if (!pool) throw new Error("Worker pool not found");
-  if (pool.status !== "active") throw new Error("Worker pool is not active");
-  if (pool.activeWorkers >= pool.capacity) return null;
+  return transact(db => {
+    const pool = db.workerPools.find(item => item.id === poolId);
+    if (!pool) throw new Error("Worker pool not found");
+    if (pool.status !== "active") throw new Error("Worker pool is not active");
+    if (pool.activeWorkers >= pool.capacity) return null;
 
-  const worker = db.productionWorkers.find(item =>
-    item.poolId === poolId &&
-    item.status === "ready" &&
-    !item.activeJobId
-  );
-  if (!worker) return null;
+    const worker = db.productionWorkers.find(item =>
+      item.poolId === poolId &&
+      item.status === "ready" &&
+      !item.activeJobId
+    );
+    if (!worker) return null;
 
-  const job = await claimNextJob(ownerId, leaseMs, {
-    resourceClass: pool.resourceClass
+    const now = Date.now();
+    const availableJob = db.jobs
+      .filter(job =>
+        [JOB_STATUS.QUEUED, JOB_STATUS.RETRYING].includes(job.status) &&
+        job.resourceClass === pool.resourceClass &&
+        Date.parse(job.availableAt) <= now
+      )
+      .sort((a, b) => Date.parse(a.availableAt) - Date.parse(b.availableAt))[0];
+
+    if (!availableJob) return null;
+
+    availableJob.status = JOB_STATUS.RUNNING;
+    availableJob.attempts += 1;
+    availableJob.leaseId = randomUUID();
+    availableJob.leaseOwner = ownerId;
+    availableJob.leaseExpiresAt = new Date(now + lease).toISOString();
+    availableJob.updatedAt = new Date(now).toISOString();
+
+    worker.status = "busy";
+    worker.activeJobId = availableJob.id;
+    worker.updatedAt = new Date(now).toISOString();
+
+    pool.activeWorkers += 1;
+    pool.updatedAt = worker.updatedAt;
+
+    return { job: availableJob, worker };
   });
-  if (!job) return null;
-
-  await transact(state => {
-    const currentWorker = state.productionWorkers.find(item => item.id === worker.id);
-    const currentPool = state.workerPools.find(item => item.id === poolId);
-    if (!currentWorker || !currentPool) throw new Error("Production worker state disappeared");
-    currentWorker.status = "busy";
-    currentWorker.activeJobId = job.id;
-    currentWorker.updatedAt = new Date().toISOString();
-    currentPool.activeWorkers += 1;
-    currentPool.updatedAt = currentWorker.updatedAt;
-  });
-
-  return { job, worker };
 }
-
 export async function completeProductionJob(workerId, result = null) {
   const db = await loadDb();
   const worker = db.productionWorkers.find(item => item.workerId === workerId);
