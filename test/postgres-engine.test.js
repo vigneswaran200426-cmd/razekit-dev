@@ -198,20 +198,27 @@ test.after(async () => {
   if (DATABASE_URL) {
     // Remove only this run's rows; the database is shared with other runs.
     const pool = await (await store.nativeStore()).getPool();
-    await pool.query(
-      `DELETE FROM ${SCHEMA}.rk_state WHERE data->>'testTag' = $1`,
-      [TAG]
-    );
+
+    // Agents, workspaces, jobs and messages created by the engine do not carry
+    // the tag, so they are found through this run's tasks — which means the
+    // tasks have to be read BEFORE the tagged rows are deleted. Deleting first
+    // leaves nothing to match on, and the orphans then interfere with the next
+    // run's queries.
     const db = await store.loadDb();
-    const orphanTasks = db.tasks.filter((t) => t.testTag === TAG);
-    if (orphanTasks.length) {
-      // Agents/workspaces created by the engine do not carry the tag, so clear
-      // anything still pointing at this run's tasks.
+    const ids = new Set(db.tasks.filter((t) => t.testTag === TAG).map((t) => t.id));
+    const agentIds = new Set(
+      db.agentInstances.filter((a) => ids.has(a.taskId)).map((a) => a.id)
+    );
+
+    await pool.query(`DELETE FROM ${SCHEMA}.rk_state WHERE data->>'testTag' = $1`, [TAG]);
+
+    if (ids.size || agentIds.size) {
       await store.transact((state) => {
-        const ids = new Set(orphanTasks.map((t) => t.id));
         for (const key of store.COLLECTIONS) {
           if (!Array.isArray(state[key])) continue;
-          state[key] = state[key].filter((row) => !ids.has(row?.taskId));
+          state[key] = state[key].filter(
+            (row) => !ids.has(row?.taskId) && !agentIds.has(row?.agentInstanceId)
+          );
         }
       });
     }
