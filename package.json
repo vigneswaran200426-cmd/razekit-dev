@@ -8,5 +8,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test"
+  },
+  "optionalDependencies": {
+    "pg": "^8.23.0"
   }
 }

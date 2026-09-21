@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { id, loadDb, transact } from "./store.js";
+import { id, loadDb, transact, nativeStore } from "./store.js";
 import {
   AGENT_STATUS,
   AGENT_TYPES,
@@ -148,6 +148,28 @@ export async function claimNextJob(ownerId, leaseMs = DEFAULT_LEASE_MS, filters 
   }
   if (filters.resourceClass != null && !filters.resourceClass.trim()) {
     throw new Error("resourceClass filter must be non-empty");
+  }
+
+  // On Postgres the claim is a row-level operation, not a read-modify-write of
+  // the whole document. Every worker polls this same queue, so serialising them
+  // through the global lock would make N workers take turns for work that is
+  // disjoint by definition; FOR UPDATE SKIP LOCKED lets each take a different
+  // row. The JSON store has no such capability and falls through below, which
+  // is exactly what keeps local development and CI working unchanged.
+  const store = await nativeStore();
+  if (store?.claimJob) {
+    return store.claimJob({
+      ownerId,
+      leaseMs,
+      filters: {
+        agentInstanceId: filters.agentInstanceId ?? null,
+        taskId: filters.taskId ?? null,
+        kind: filters.kind ?? null,
+        resourceClass: filters.resourceClass ?? null
+      },
+      jobStatuses: [JOB_STATUS.QUEUED, JOB_STATUS.RETRYING],
+      runningStatus: JOB_STATUS.RUNNING
+    });
   }
 
   return transact(db => {
