@@ -1,6 +1,6 @@
 import http from "node:http";
 import { URL } from "node:url";
-import { loadDb, transact, id } from "./store.js";
+import { loadDb, transact, id, storeKind, assertProductionStore } from "./store.js";
 import { TASK_TYPES, TASK_STATUS, agentTypeForTask, buildPreflight } from "./domain.js";
 import {
   spawnAgentForTask,
@@ -128,6 +128,14 @@ const PORT = Number(process.env.PORT || 3000);
 const modelRegistry = new ModelAdapterRegistry();
 const modelConfiguration = configureModelRegistry(modelRegistry);
 
+// A deployment must never boot on the process-local file store. That store does
+// not fail when a second container appears — it quietly serves a different copy
+// of reality, so nothing downstream can detect it. Startup is the only place
+// the mistake is still visible.
+if (process.env.NODE_ENV === "production") {
+  assertProductionStore();
+}
+
 const modelOrchestrator = new ModelOrchestrator({ registry: modelRegistry });
 const runtimeCoordinator = createRuntimeCoordinator({ orchestrator: modelOrchestrator });
 const toolAdapterRegistry = new ToolAdapterRegistry();
@@ -170,7 +178,8 @@ const server = http.createServer(async (req,res) => {
         time:new Date().toISOString(),
         // Names the configured providers and models so an operator can tell a
         // deterministic deployment from a real one. Never echoes a key.
-        models:modelConfiguration
+        models:modelConfiguration,
+        store:storeKind()
       });
     }
 

@@ -263,6 +263,50 @@ Execution runs *before* review, so a review always judges a result rather than
 an intention; and a passing review does not complete a task — verification runs
 separately and overrules the reviewer.
 
+### Persistence
+
+Two backings, selected explicitly by `RAZEKIT_STORE` — never inferred.
+
+| | `json` | `postgres` |
+|---|---|---|
+| Where | one file, `data/db.json` | Neon, schema `razekit_dev` |
+| Atomicity | one in-process promise chain | `pg_advisory_xact_lock` inside a real transaction |
+| Safe with >1 container | **no** | yes |
+| Use for | local development, CI | production |
+
+The JSON store is not merely slower in production — it is wrong, and quietly.
+Two containers each get their own file and neither can tell; the "atomic" job
+claim is only atomic inside whichever process runs it. `assertProductionStore()`
+runs at startup under `NODE_ENV=production` because that is the last moment the
+mistake is still visible.
+
+All 24 dependent modules are unchanged: the store surface is three functions
+(`loadDb`, `transact`, `id`) and both backings implement it. A transaction reads
+the whole document in one query, as the file store read the whole file, and
+writes back only the rows that changed.
+
+Job claiming is the exception, and deliberately does not take the global lock:
+every worker polls the same queue, so serialising them would make N workers take
+turns for work that is disjoint by definition. `FOR UPDATE SKIP LOCKED` gives
+each worker a different row, and the row lock — not a check-then-write in
+application code — is what makes it exclusive.
+
+Timestamps in a claim come from the caller, never from the database. Every job
+timestamp is written by the application, so comparing one against the database's
+`now()` puts two clocks in one comparison; the gap between a developer laptop
+and Neon measured 154 seconds, enough to hide a freshly scheduled retry and to
+expire a lease that has not expired.
+
+**Run workers in the same region as the database.** A round trip from outside
+the region measured ~250 ms, and a build makes hundreds of transactions — the
+same build takes ~200 s from a laptop and is latency-bound, not CPU-bound.
+
+```bash
+RAZEKIT_STORE=postgres RAZEKIT_DATABASE_URL=... npm start
+npm test            # JSON path; Postgres tests skip cleanly without a database
+RAZEKIT_DATABASE_URL=... node --test test/postgres-store.test.js test/postgres-engine.test.js
+```
+
 ### Worker agent
 
 `node src/worker-agent.js` runs on a worker machine and offers it to the control
