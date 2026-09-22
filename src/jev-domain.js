@@ -289,6 +289,80 @@ export function deriveGraphStatus(nodes) {
   return started ? GRAPH_STATUS.RUNNING : GRAPH_STATUS.PENDING;
 }
 
+// ── Tool scope ───────────────────────────────────────────────────────────────
+
+/**
+ * A node's declared scopes are written as `toolKey:scope`, where the scope part
+ * may itself contain a colon — `filesystem:workspace:write`. Split on the first
+ * colon only.
+ */
+export function parseToolScope(entry) {
+  const text = String(entry || "");
+  const at = text.indexOf(":");
+  if (at <= 0 || at === text.length - 1) {
+    throw new Error("Malformed tool scope: " + text);
+  }
+  return { toolKey: text.slice(0, at), scope: text.slice(at + 1) };
+}
+
+/**
+ * Decide whether a node may make this tool call.
+ *
+ * This NARROWS; it never widens. The agent's granted permissions remain the
+ * outer boundary and are checked separately by the permission broker — a node
+ * cannot reach a scope the agent was never given by declaring it here.
+ *
+ * Three cases, and the difference between the last two is deliberate:
+ *
+ *   toolScopes absent (null/undefined)  no narrowing. The node was created
+ *                                       before scopes existed, or by a caller
+ *                                       that declares none; the agent's own
+ *                                       permissions still apply in full.
+ *   toolScopes []                       explicitly no tools at all.
+ *   toolScopes [...]                    only what is listed.
+ *
+ * Making "absent" mean "nothing" would look stricter and would in fact be
+ * worse: every existing node would start failing, and the pressure would be to
+ * hand nodes a blanket scope to get moving again.
+ */
+export function checkNodeToolScope(node, toolKey, requestedScopes = []) {
+  const declared = node?.toolScopes;
+  if (declared === null || declared === undefined) {
+    return { allowed: true, narrowed: false, missing: [] };
+  }
+  if (!Array.isArray(declared)) {
+    throw new Error("Node toolScopes must be an array when present");
+  }
+
+  const allowedForTool = new Set(
+    declared
+      .map(parseToolScope)
+      .filter(entry => entry.toolKey === toolKey)
+      .map(entry => entry.scope)
+  );
+
+  if (allowedForTool.size === 0) {
+    return {
+      allowed: false,
+      narrowed: true,
+      missing: requestedScopes.length ? [...requestedScopes] : ["*"],
+      reason: "This step does not use the " + toolKey + " tool"
+    };
+  }
+
+  // An empty request means "every scope this tool has", and the node cannot be
+  // assumed to have declared all of them — so it is resolved by the caller
+  // before it reaches here. Reaching here empty means the node's own scopes are
+  // the request, which is trivially within itself.
+  const missing = requestedScopes.filter(scope => !allowedForTool.has(scope));
+  return {
+    allowed: missing.length === 0,
+    narrowed: true,
+    missing,
+    reason: missing.length ? "Step does not declare " + missing.join(", ") + " on " + toolKey : null
+  };
+}
+
 /**
  * A progress summary for the dashboard: counts only, no node content, so it can
  * be rendered without re-checking what any node's output holds.

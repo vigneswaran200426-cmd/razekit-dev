@@ -4,6 +4,7 @@ import { getTool } from "./tool-registry.js";
 import { resolveCredentialReference, requestCredentialReference } from "./credential-vault.js";
 import { enforceTenantLimit } from "./abuse-controls.js";
 import { tenantForTask, writeAudit } from "./tenant-security.js";
+import { checkNodeToolScope } from "./jev-domain.js";
 
 export class ToolAdapterRegistry {
   constructor() {
@@ -35,7 +36,7 @@ export class ToolBroker {
     this.registry = registry;
   }
 
-  async invoke({ agentInstanceId, toolKey, input = {}, scopes = [], credentialProvider = null }) {
+  async invoke({ agentInstanceId, toolKey, input = {}, scopes = [], credentialProvider = null, nodeId = null }) {
     const taskId = await this.getAgentTaskId(agentInstanceId);
     const tenantId = await tenantForTask(taskId);
     await enforceTenantLimit(tenantId, "toolCallsPerMinute", "tool.call");
@@ -45,9 +46,42 @@ export class ToolBroker {
       agentInstanceId,
       taskId,
       toolKey,
+      nodeId,
       requestedScopes: decision.requestedScopes,
       createdAt: new Date().toISOString()
     };
+
+    // When the call is made on behalf of a graph node, the node's declared
+    // scopes narrow what the agent's permissions already allow.
+    //
+    // This runs AFTER authorizeToolCall on purpose: `decision.requestedScopes`
+    // is the resolved list, with an empty request already expanded to the
+    // tool's full scope set. Checking the raw argument instead would let a call
+    // that passed no scopes slip through the narrowing while still receiving
+    // every scope the tool has.
+    //
+    // It also runs BEFORE any credential is resolved and before the adapter is
+    // reached, so a step outside its declared scope never causes a secret to be
+    // leased on its behalf.
+    if (nodeId) {
+      const node = await this.getGraphNode(nodeId, agentInstanceId);
+      const verdict = checkNodeToolScope(node, toolKey, decision.requestedScopes);
+      if (!verdict.allowed) {
+        const audit = await this.audit({
+          ...baseAudit,
+          status: "scope_denied",
+          missingScopes: verdict.missing,
+          error: verdict.reason
+        });
+        return {
+          allowed: false,
+          audit,
+          scopeDenied: true,
+          missingScopes: verdict.missing,
+          reason: verdict.reason
+        };
+      }
+    }
 
     if (!decision.allowed) {
       const audit = await this.audit({
@@ -140,6 +174,26 @@ export class ToolBroker {
     return agent.taskId;
   }
 
+  /**
+   * The node a call claims to be running under.
+   *
+   * The node must belong to the calling agent's own task. Without that check
+   * `nodeId` would be a way to borrow another task's — and so potentially
+   * another tenant's — declared scopes by quoting an id, which would make the
+   * narrowing worse than useless.
+   */
+  async getGraphNode(nodeId, agentInstanceId) {
+    const db = await loadDb();
+    const agent = db.agentInstances.find(x => x.id === agentInstanceId);
+    if (!agent) throw new Error("Agent instance not found");
+    const node = db.graphNodes.find(x => x.id === nodeId);
+    if (!node) throw new Error("Unknown graph node: " + nodeId);
+    if (node.taskId !== agent.taskId) {
+      throw new Error("Graph node does not belong to this agent's task");
+    }
+    return node;
+  }
+
   async audit(event) {
     const item = await transact(db => {
       const record = {
@@ -159,10 +213,15 @@ export class ToolBroker {
       action: "tool.call",
       resourceType: "tool",
       resourceId: item.id,
-      outcome: item.status === "failed" ? "failed" : "success",
+      // A refusal is not a success. "scope_denied" in particular is a security
+      // event — a step reaching for a tool it never declared — and recording it
+      // as an ordinary successful tool call is how it would go unnoticed in the
+      // one log built to notice it.
+      outcome: ["failed", "scope_denied"].includes(item.status) ? "failed" : "success",
       metadata: {
         toolKey: item.toolKey,
         status: item.status,
+        nodeId: item.nodeId ?? null,
         requestedScopes: item.requestedScopes
       }
     });

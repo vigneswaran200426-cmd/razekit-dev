@@ -5,6 +5,10 @@ import { getAgent, addAgentMessage, completeAgent, failAgent } from "./agent-man
 import { checkBudget, charge } from "./budget-manager.js";
 import { readBlackboard, writeBlackboard } from "./blackboard.js";
 import { executeAppWebTask } from "./app-web-executor.js";
+import { normalizeModelExecutionPlan } from "./app-web-domain.js";
+import { createGraphForAgent, drainGraph } from "./jev-executor.js";
+import { cancelGraph, graphForTask } from "./jev.js";
+import { tenantForTask } from "./tenant-security.js";
 import { executeGameTask } from "./game-executor.js";
 import { verifyTask } from "./verification.js";
 import { USER_DASHBOARD_STATUS } from "./dashboard.js";
@@ -99,6 +103,67 @@ async function blockForUser(agent, reason) {
   return { stage: LOOP_STAGE.BLOCKED, reason };
 }
 
+/**
+ * Run the current plan as a graph.
+ *
+ * The plan Fable produced is converted to a JEV graph and drained node by node.
+ * Each node holds its own budget before it runs and settles it afterwards, so
+ * the hard limit is enforced per step rather than once for the whole build — a
+ * plan that runs out of budget half way now stops half way, with the completed
+ * half recorded, instead of being charged for work it never did.
+ *
+ * An active graph is resumed rather than rebuilt. That is what makes a worker
+ * death mid-build recoverable: the next tick picks up the nodes that have not
+ * succeeded and leaves the ones that have.
+ */
+async function runGraphExecution(agent, workspace) {
+  const tenantId = await tenantForTask(agent.taskId);
+  const entries = await readBlackboard(agent.id);
+  const plan = blackboardValue(entries, "execution.plan");
+  const planId = normalizeModelExecutionPlan(plan)?.id ?? null;
+
+  let existing = await graphForTask({ taskId: agent.taskId, tenantId });
+
+  // A revised plan is a different plan. Leaving the previous graph active would
+  // drain yesterday's steps and report them as this plan's result.
+  if (existing && planId && existing.graph.planId && existing.graph.planId !== planId) {
+    await cancelGraph({ graphId: existing.graph.id, reason: "superseded by a revised plan" });
+    existing = null;
+  }
+
+  if (!existing) {
+    await createGraphForAgent(agent.id, { plan: plan ?? null });
+  }
+
+  const result = await drainGraph({
+    agentInstanceId: agent.id,
+    workspaceRoot: workspace.path,
+    workerId: "loop:" + agent.id
+  });
+
+  // A graph that stopped because a node could not be afforded is a budget
+  // block, not a build failure, and the user needs to be told which it was.
+  const refusal = blackboardValue(await readBlackboard(agent.id), "execution.lastBudgetRefusal");
+  if (result.status === "failed" && refusal) {
+    return blockForUser(
+      agent,
+      "This task ran out of budget part-way through the build (" + refusal.reason +
+        "). The work completed so far is kept. Increase the budget to continue."
+    );
+  }
+
+  await addAgentMessage(
+    agent.id,
+    "agent",
+    result.status === "completed"
+      ? "Finished building and testing this version."
+      : "Hit a problem while building; reviewing what went wrong.",
+    { lowLevel: true, runId: result.runId, status: result.status, nodes: result.executed?.length ?? 0 }
+  );
+
+  return { stage: LOOP_STAGE.EXECUTE, status: result.status, runId: result.runId, viaGraph: true };
+}
+
 async function runExecution(agent) {
   const db = await loadDb();
   const workspace = db.workspaces.find(x => x.id === agent.workspaceId);
@@ -115,7 +180,24 @@ async function runExecution(agent) {
     );
   }
 
-  const executor = agent.agentType === AGENT_TYPES.KONAMI ? executeGameTask : executeAppWebTask;
+  // Niomi's App/Web work runs as a graph. Konami still uses the flat executor:
+  // the game runtimes have their own adapters and moving them is its own piece
+  // of work, so claiming they run on JEV would be untrue.
+  if (agent.agentType !== AGENT_TYPES.KONAMI) {
+    try {
+      return await runGraphExecution(agent, workspace);
+    } catch (error) {
+      await writeBlackboard(
+        agent.id,
+        "execution.lastResult",
+        { status: "failed", error: error.message || "Graph execution failed to start" },
+        "autonomous-loop"
+      );
+      return { stage: LOOP_STAGE.EXECUTE, status: "failed", error: error.message };
+    }
+  }
+
+  const executor = executeGameTask;
 
   let result;
   try {

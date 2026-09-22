@@ -122,6 +122,31 @@ test("a website task runs plan -> implement -> execute -> review -> verify -> co
   const blackboard = await readBlackboard(agent.id);
   assert.ok(blackboard.some(x => x.key === "architecture.plan"), "Astra's plan should be on the blackboard");
   assert.ok(blackboard.some(x => x.key === "execution.plan"), "Fable's plan should be on the blackboard");
+
+  // ── The execution actually went through JEV ────────────────────────────────
+  //
+  // Everything above would still pass if the loop had quietly run the old flat
+  // path, so "the loop executes through the graph" has to be asserted rather
+  // than inferred from the task completing.
+  const runs = db.executionRuns.filter(x => x.agentInstanceId === agent.id);
+  assert.ok(runs.length > 0, "an execution run should exist");
+  assert.ok(
+    runs.every(run => run.kind === "jev_graph"),
+    "every execution run should be graph-backed, got: " + runs.map(r => r.kind).join(", ")
+  );
+
+  const graphs = db.taskGraphs.filter(x => x.taskId === task.id);
+  assert.equal(graphs.length, 1, "the task built exactly one graph");
+  assert.equal(graphs[0].status, "succeeded");
+
+  const nodes = db.graphNodes.filter(x => x.graphId === graphs[0].id);
+  assert.ok(nodes.length > 1, "the plan became more than one node");
+  assert.ok(nodes.every(n => n.status === "succeeded"), "every node succeeded");
+  assert.ok(nodes.every(n => n.leaseId === null || n.status === "succeeded"), "no node is still leased");
+
+  // The dependency edges survived into storage — a graph whose nodes all have
+  // no dependencies would have run as a list wearing a graph's clothes.
+  assert.ok(nodes.some(n => (n.dependsOn || []).length > 0), "the graph has real dependency edges");
 });
 
 test("recorded deliverable paths do not depend on the worker's platform", async () => {

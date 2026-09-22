@@ -241,8 +241,31 @@ Deliverables:
 Evidence: 23 tests on the JSON store, 7 against real Neon including six
 concurrent workers claiming four parallel nodes exactly once each.
 
-Not yet done: the autonomous loop still executes flat plans. Translating a
-planner's steps into a graph, and per-node budget reservation, come next.
+## Phase 15 — JEV on the live execution path
+**Status: verified (JSON + real Postgres)**
+
+The autonomous loop no longer executes flat plans. Niomi's App/Web work is
+converted to a graph and drained node by node.
+
+Deliverables:
+- `jev-planner.js`: planner step list to DAG, conservatively derived so the
+  graph is never weaker than the list it replaces
+- Per-step tool scopes derived from the step kind, not taken from the model
+- `jev-budget.js`: per-node reserve before execution, capture actual spend and
+  release the remainder after — on the EXISTING billing primitives, no second
+  ledger
+- `captureSpend` extended with partial capture; existing callers unchanged
+- Node tool-scope enforcement inside `ToolBroker.invoke`, before any credential
+  is resolved and after scope expansion
+- Execution runs project the graph into `result.plan.steps`, the shape the
+  verifier and dashboard already consume
+
+Evidence: 185 local tests, 157 pass, 0 fail, 28 skipped; 24 against real Neon.
+The live loop is asserted to run through the graph, not inferred from tasks
+completing.
+
+Not yet done: Konami still uses the flat executor; model phases are not graph
+nodes; `drainGraph` runs inline rather than in a separate worker process.
 
 ## Rule for implementation
 

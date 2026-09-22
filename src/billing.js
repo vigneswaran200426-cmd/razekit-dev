@@ -109,7 +109,23 @@ export async function reserveSpend(agentId, amount, reason, { idempotencyKey, ca
   });
 }
 
-export async function captureSpend(reservationId) {
+/**
+ * Settle a reservation.
+ *
+ * With no `actualAmount` this captures the full reserved amount, which is what
+ * every existing caller does and what the behaviour has always been.
+ *
+ * With an `actualAmount` below the reservation it captures only what was really
+ * spent and releases the rest in the same transaction. That is one settlement,
+ * not a release followed by a fresh charge: splitting it in two would leave a
+ * window in which the unused budget is free for another node to reserve while
+ * this node's real cost has not yet been recorded.
+ *
+ * An `actualAmount` above the reservation is refused. Spending more than was
+ * reserved is exactly the overrun the reservation exists to prevent, and
+ * silently capturing it would make the hard limit advisory.
+ */
+export async function captureSpend(reservationId, { actualAmount } = {}) {
   return transact(db => {
     const reservation = db.billingReservations.find(item => item.id === reservationId);
     if (!reservation) throw new Error("Spend reservation not found");
@@ -119,10 +135,23 @@ export async function captureSpend(reservationId) {
     const agent = db.agentInstances.find(item => item.id === reservation.agentInstanceId);
     if (!agent) throw new Error("Agent instance not found");
 
+    const reserved = Number(reservation.amount || 0);
+    let captured = reserved;
+    if (actualAmount !== undefined) {
+      const actual = Number(actualAmount);
+      if (!Number.isFinite(actual) || actual < 0) {
+        throw new Error("Captured amount must be a non-negative number");
+      }
+      if (actual > reserved) {
+        throw new Error("Captured amount exceeds the reserved amount");
+      }
+      captured = actual;
+    }
+
     const competingReserved = db.billingReservations
       .filter(item => item.agentInstanceId === reservation.agentInstanceId && item.status === "reserved" && item.id !== reservation.id)
       .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-    const nextSpend = Number(agent.budgetUsed || 0) + reservation.amount;
+    const nextSpend = Number(agent.budgetUsed || 0) + captured;
     if (nextSpend + competingReserved > Number(agent.budgetLimit)) throw new Error("Hard budget limit exceeded");
 
     agent.budgetUsed = nextSpend;
@@ -135,6 +164,12 @@ export async function captureSpend(reservationId) {
     const now = new Date().toISOString();
     reservation.status = "captured";
     reservation.resolvedAt = now;
+    // The reservation keeps what it originally held alongside what was actually
+    // taken, so "we set aside 5 and spent 2" stays readable afterwards instead
+    // of the reservation being rewritten to look as though it was always 2.
+    reservation.reservedAmount = reserved;
+    reservation.capturedAmount = captured;
+    reservation.releasedAmount = reserved - captured;
 
     db.billingLedger.push({
       id: id("bledger"),
@@ -144,7 +179,9 @@ export async function captureSpend(reservationId) {
       reservationId: reservation.id,
       provider: reservation.provider,
       category: reservation.category,
-      amount: reservation.amount,
+      amount: captured,
+      reservedAmount: reserved,
+      releasedAmount: reserved - captured,
       currency: "USD",
       reason: reservation.reason,
       idempotencyKey: reservation.idempotencyKey,
@@ -155,7 +192,7 @@ export async function captureSpend(reservationId) {
       id: id("msg"),
       agentInstanceId: agent.id,
       role: "system",
-      content: "Spend captured: " + reservation.amount,
+      content: "Spend captured: " + captured,
       metadata: { billingReservationId: reservation.id, category: reservation.category },
       createdAt: now
     });
@@ -168,7 +205,9 @@ export async function captureSpend(reservationId) {
       resourceType: "billing-reservation",
       resourceId: result.id,
       metadata: {
-        amount: result.amount,
+        amount: result.capturedAmount ?? result.amount,
+        reservedAmount: result.reservedAmount ?? result.amount,
+        releasedAmount: result.releasedAmount ?? 0,
         category: result.category,
         provider: result.provider,
         idempotencyKey: result.idempotencyKey
