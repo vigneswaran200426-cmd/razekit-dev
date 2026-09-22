@@ -173,12 +173,21 @@ export function graphFromExecutionPlan(plan, { taskType = "app" } = {}) {
       dependsOn = [...allKeysSoFar];
     }
 
+    // A game plan declares its engine once, at the top. The graph stores nodes,
+    // not plans, so an engine step read back from the database would otherwise
+    // have no idea which engine to act on. Stamping it onto the payload — only
+    // where the step has not named one itself — means the node carries
+    // everything it needs and the executor stays agent-agnostic.
+    const payload = taskType === "game" && plan.engine && !step.engine
+      ? { ...step, engine: plan.engine }
+      : step;
+
     nodes.push({
       key,
       kind: step.kind,
       description: step.description || step.phase || step.kind,
       dependsOn,
-      payload: step,
+      payload,
       resourceClass: step.resourceClass || "cpu",
       // The flat engine expressed retries as "extra attempts after the first";
       // JEV counts total attempts. Converting here keeps a plan's meaning the

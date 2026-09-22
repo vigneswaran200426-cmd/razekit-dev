@@ -8,6 +8,7 @@ import { executeAppWebTask } from "./app-web-executor.js";
 import { normalizeModelExecutionPlan } from "./app-web-domain.js";
 import { createGraphForAgent, drainGraph } from "./jev-executor.js";
 import { cancelGraph, graphForTask } from "./jev.js";
+import { profileForAgent } from "./jev-profiles.js";
 import { tenantForTask } from "./tenant-security.js";
 import { executeGameTask } from "./game-executor.js";
 import { verifyTask } from "./verification.js";
@@ -52,6 +53,19 @@ export const LOOP_STAGE = {
 const EXECUTION_COST = readNumberEnv("RAZEKIT_EXECUTION_RUN_COST", 0);
 
 const MAX_EXECUTION_ATTEMPTS = readNumberEnv("RAZEKIT_MAX_EXECUTION_ATTEMPTS", 3);
+
+// Game engine, playtest and packager adapters for the loop's Konami runs.
+//
+// Empty by default, which is the honest position: this deployment configures no
+// engine toolchain, so an engine or build step fails the way it always has. An
+// operator — or a test with deterministic adapters — registers real ones here
+// rather than the executor pretending an engine exists.
+let gameAdapters = {};
+
+export function configureGameAdapters(adapters = {}) {
+  gameAdapters = adapters || {};
+  return gameAdapters;
+}
 
 function blackboardValue(entries, key) {
   return entries.find(entry => entry.key === key)?.value ?? null;
@@ -116,11 +130,24 @@ async function blockForUser(agent, reason) {
  * death mid-build recoverable: the next tick picks up the nodes that have not
  * succeeded and leaves the ones that have.
  */
-async function runGraphExecution(agent, workspace) {
+async function runGraphExecution(agent, workspace, adapters = {}) {
+  const profile = profileForAgent(agent);
   const tenantId = await tenantForTask(agent.taskId);
   const entries = await readBlackboard(agent.id);
-  const plan = blackboardValue(entries, "execution.plan");
-  const planId = normalizeModelExecutionPlan(plan)?.id ?? null;
+
+  // Each production system keeps its plan under its own blackboard key, and
+  // validates it with its own contract. Reading App/Web's key for a game agent
+  // would silently find nothing and rebuild the baseline plan every tick.
+  const plan = blackboardValue(entries, profile.keys.plan);
+  const planId = (() => {
+    try {
+      return profile.normalizePlan(plan)?.id ?? null;
+    } catch {
+      // An unusable stored plan is not a reason to crash the transition; the
+      // graph build below will reject it with a message the reviewer can read.
+      return null;
+    }
+  })();
 
   let existing = await graphForTask({ taskId: agent.taskId, tenantId });
 
@@ -138,12 +165,13 @@ async function runGraphExecution(agent, workspace) {
   const result = await drainGraph({
     agentInstanceId: agent.id,
     workspaceRoot: workspace.path,
+    adapters,
     workerId: "loop:" + agent.id
   });
 
   // A graph that stopped because a node could not be afforded is a budget
   // block, not a build failure, and the user needs to be told which it was.
-  const refusal = blackboardValue(await readBlackboard(agent.id), "execution.lastBudgetRefusal");
+  const refusal = blackboardValue(await readBlackboard(agent.id), profile.keys.lastResult + ".budgetRefusal");
   if (result.status === "failed" && refusal) {
     return blockForUser(
       agent,
@@ -180,28 +208,34 @@ async function runExecution(agent) {
     );
   }
 
-  // Niomi's App/Web work runs as a graph. Konami still uses the flat executor:
-  // the game runtimes have their own adapters and moving them is its own piece
-  // of work, so claiming they run on JEV would be untrue.
-  if (agent.agentType !== AGENT_TYPES.KONAMI) {
-    try {
-      return await runGraphExecution(agent, workspace);
-    } catch (error) {
-      await writeBlackboard(
-        agent.id,
-        "execution.lastResult",
-        { status: "failed", error: error.message || "Graph execution failed to start" },
-        "autonomous-loop"
-      );
-      return { stage: LOOP_STAGE.EXECUTE, status: "failed", error: error.message };
-    }
+  // Both production systems now run as graphs. The only thing that differs is
+  // the execution profile — which runtime, which blackboard keys, which plan
+  // contract — and that is resolved from the agent rather than branched here.
+  //
+  // Game engine/playtest/packager adapters are supplied by the caller exactly
+  // as the flat executor required. The loop configures none, so an engine or
+  // build step fails with the same "No game engine adapter is configured" it
+  // has always failed with; moving onto JEV does not invent engine support.
+  try {
+    return await runGraphExecution(agent, workspace, gameAdapters);
+  } catch (error) {
+    const profile = profileForAgent(agent);
+    await writeBlackboard(
+      agent.id,
+      profile.keys.lastResult,
+      { status: "failed", error: error.message || "Graph execution failed to start" },
+      "autonomous-loop"
+    );
+    return { stage: LOOP_STAGE.EXECUTE, status: "failed", error: error.message };
   }
+}
 
-  const executor = executeGameTask;
-
+// Retained so an operator or a test can run a game task through the previous
+// flat path while the graph path beds in. The live loop no longer calls it.
+export async function runFlatGameExecution(agent, workspace) {
   let result;
   try {
-    result = await executor({
+    result = await executeGameTask({
       agentInstanceId: agent.id,
       workspaceRoot: workspace.path,
       plan: null
@@ -332,19 +366,23 @@ async function advanceAgentUnguarded(agentInstanceId, { orchestrator }) {
   // reviewing an intention rather than a result.
   if (run?.phase === ORCHESTRATION_STATUS.IMPLEMENTING &&
       run.status === ORCHESTRATION_STATUS.REVIEWING) {
-    const plan = blackboardValue(entries, "execution.plan");
-    const lastResult = blackboardValue(entries, "execution.lastResult");
+    // Each production system keeps its plan and its last result under its own
+    // keys. Reading App/Web's keys for a game agent finds nothing, so the gate
+    // never fires and the task loops between implement and review forever.
+    const keys = profileForAgent(agent).keys;
+    const plan = blackboardValue(entries, keys.plan);
+    const lastResult = blackboardValue(entries, keys.lastResult);
     const planIsFresh = !lastResult || lastResult.planId !== (plan?.id ?? null);
 
     if (plan && planIsFresh) {
-      const attempts = Number(blackboardValue(entries, "execution.attempts") || 0);
+      const attempts = Number(blackboardValue(entries, keys.plan + ".attempts") || 0);
       if (attempts >= MAX_EXECUTION_ATTEMPTS) {
         return blockForUser(
           agent,
           "This task has failed to build " + attempts + " times and needs your input before trying again."
         );
       }
-      await writeBlackboard(agentInstanceId, "execution.attempts", attempts + 1, "autonomous-loop");
+      await writeBlackboard(agentInstanceId, keys.plan + ".attempts", attempts + 1, "autonomous-loop");
       return runExecution(agent);
     }
   }
@@ -412,7 +450,12 @@ async function advanceAgentUnguarded(agentInstanceId, { orchestrator }) {
   // A revise verdict clears the execution guard so the next plan really runs
   // instead of being skipped as already-executed.
   if (decision === REVIEW_DECISIONS.REVISE) {
-    await writeBlackboard(agentInstanceId, "execution.lastResult", null, "autonomous-loop");
+    await writeBlackboard(
+      agentInstanceId,
+      profileForAgent(agent).keys.lastResult,
+      null,
+      "autonomous-loop"
+    );
   }
 
   // `phase` is the phase that just ran, which is what the stage names.

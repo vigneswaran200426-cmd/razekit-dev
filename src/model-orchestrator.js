@@ -1,6 +1,7 @@
 import { id, transact, loadDb } from "./store.js";
 import { getAgent, recordSpend } from "./agent-manager.js";
 import { readBlackboard, writeBlackboard, snapshotBlackboard } from "./blackboard.js";
+import { profileForAgent } from "./jev-profiles.js";
 import {
   listModelSessions,
   provisionModelSessions,
@@ -281,7 +282,18 @@ export class ModelOrchestrator {
     // artifacts and live under different keys: the executor runs only what is
     // under execution.plan, so an architecture sketch must never land there.
     if (response.architecture) await writeBlackboard(agent.id, "architecture.plan", response.architecture, session.provider);
-    if (response.plan) await writeBlackboard(agent.id, "execution.plan", response.plan, session.provider);
+    // Fable's plan is stored under the key its own production system reads.
+    // Konami reads game.execution.plan; writing every plan to App/Web's key
+    // meant a game agent never saw the model's plan at all and silently fell
+    // back to the baseline one. For Niomi the key is unchanged.
+    if (response.plan) {
+      await writeBlackboard(
+        agent.id,
+        profileForAgent(agent).keys.plan,
+        response.plan,
+        session.provider
+      );
+    }
     if (response.implementation) await writeBlackboard(agent.id, "implementation.result", response.implementation, session.provider);
     if (response.review) await writeBlackboard(agent.id, "review.result", response.review, session.provider);
 

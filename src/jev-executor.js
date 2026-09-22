@@ -6,9 +6,8 @@ import { reserveNodeBudget, captureNodeBudget, releaseNodeBudget, majorToMinor }
 import { getAgent } from "./agent-manager.js";
 import { writeBlackboard } from "./blackboard.js";
 import { writeCheckpoint } from "./reliability.js";
-import { AppWebRuntime, buildAppWebExecutionPlan } from "./app-web-executor.js";
 import { tenantForTask } from "./tenant-security.js";
-import { AGENT_TYPES } from "./domain.js";
+import { profileForAgent } from "./jev-profiles.js";
 import { readNumberEnv } from "./adapters/model-json.js";
 
 // Draining a task's graph.
@@ -72,8 +71,15 @@ export async function createGraphForAgent(agentInstanceId, {
   const task = db.tasks.find(item => item.id === agent.taskId);
   if (!task) throw new Error("Task not found");
 
-  const taskType = agent.agentType === AGENT_TYPES.KONAMI ? "game" : "app";
-  const executionPlan = plan || await buildAppWebExecutionPlan(agentInstanceId);
+  const profile = profileForAgent(agent);
+  const taskType = profile.taskType;
+
+  // A caller-supplied plan is normalised through the profile's own validator,
+  // so a game plan is checked against the game contract rather than the
+  // App/Web one. An unusable plan is rejected here, before a graph exists.
+  const executionPlan = plan
+    ? (profile.normalizePlan(plan) ?? (() => { throw new Error("Execution plan is not valid for " + taskType); })())
+    : await profile.buildPlan(agentInstanceId);
 
   const nodes = graphFromExecutionPlan(executionPlan, { taskType });
 
@@ -123,6 +129,7 @@ export async function executeNextNode({
   agentInstanceId,
   workspaceRoot,
   runtime = null,
+  adapters = {},
   taskId = null,
   tenantId = null,
   workerId = "inline-worker",
@@ -131,6 +138,7 @@ export async function executeNextNode({
 }) {
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
+  const profile = profileForAgent(agent);
 
   const claim = await claimNextNode({
     taskId: taskId || agent.taskId,
@@ -157,7 +165,7 @@ export async function executeNextNode({
     });
     await writeBlackboard(
       agentInstanceId,
-      "execution.lastBudgetRefusal",
+      profile.keys.lastResult + ".budgetRefusal",
       { nodeKey: node.key, limit: hold.limit, reason: hold.reason },
       "jev-executor"
     );
@@ -171,7 +179,7 @@ export async function executeNextNode({
   }
 
   // ── Work ──────────────────────────────────────────────────────────────────
-  const activeRuntime = runtime || new AppWebRuntime({ workspaceRoot });
+  const activeRuntime = runtime || profile.createRuntime({ workspaceRoot, adapters });
   let output = null;
   let failure = null;
 
@@ -182,7 +190,11 @@ export async function executeNextNode({
         taskId: agent.taskId,
         nodeId: node.id,
         graphId: node.graphId,
-        attempt: node.attempt
+        attempt: node.attempt,
+        // A game step reads `step.engine || context.engine`. The planner stamps
+        // the engine onto the payload, and this is the second half of that
+        // contract for any step that was written without one.
+        ...(node.payload?.engine ? { engine: node.payload.engine } : {})
       }),
       node.timeoutMs
     );
@@ -246,7 +258,7 @@ export async function executeNextNode({
     });
     await writeBlackboard(
       agentInstanceId,
-      "execution.lastEvent",
+      profile.keys.lastEvent,
       { type: "node_failed", nodeKey: node.key, attempt: node.attempt, error: failure.message },
       "jev-executor"
     );
@@ -261,7 +273,7 @@ export async function executeNextNode({
   const done = await completeNode({ nodeId: node.id, leaseId: node.leaseId, output, now });
   await writeBlackboard(
     agentInstanceId,
-    "execution.lastEvent",
+    profile.keys.lastEvent,
     { type: "node_succeeded", nodeKey: node.key, attempt: node.attempt },
     "jev-executor"
   );
@@ -285,12 +297,14 @@ export async function drainGraph({
   agentInstanceId,
   workspaceRoot,
   runtime = null,
+  adapters = {},
   workerId = "inline-worker",
   maxSteps = 200,
   now = () => new Date()
 }) {
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
+  const profile = profileForAgent(agent);
   const tenantId = await tenantForTask(agent.taskId);
 
   const runId = id("jevrun");
@@ -299,7 +313,7 @@ export async function drainGraph({
       id: runId,
       taskId: agent.taskId,
       agentInstanceId,
-      kind: "jev_graph",
+      kind: profile.runKind,
       planId: null,
       status: "running",
       startedAt: new Date().toISOString(),
@@ -319,6 +333,7 @@ export async function drainGraph({
       agentInstanceId,
       workspaceRoot,
       runtime,
+      adapters,
       tenantId,
       workerId,
       now: now()
@@ -329,7 +344,7 @@ export async function drainGraph({
     // Checkpoint after every node, so a worker that dies mid-drain leaves a
     // record of exactly how far it got rather than an empty run row.
     await writeCheckpoint(
-      { agentInstanceId, taskId: agent.taskId, kind: "jev_graph", scopeId: runId },
+      { agentInstanceId, taskId: agent.taskId, kind: profile.runKind, scopeId: runId },
       { executed, steps },
       { runId }
     );
@@ -371,16 +386,26 @@ export async function drainGraph({
       }
     };
     run.error = firstFailure ? (firstFailure.error?.message || "Node failed: " + firstFailure.key) : null;
+    // The flat executor recorded package-step results on the run, and the
+    // dashboard's deliverables list reads them from there. Moving onto JEV must
+    // not quietly stop producing them.
+    run.artifacts = (view?.nodes ?? [])
+      .filter(n => profile.packageKinds.includes(n.kind) && n.status === NODE_STATUS.SUCCEEDED && n.output)
+      .map(n => n.output);
   });
 
   await writeBlackboard(
     agentInstanceId,
-    "execution.lastResult",
+    profile.keys.lastResult,
     {
       runId,
       status,
       planId: view?.graph?.planId ?? null,
       graphId: view?.graph?.id ?? null,
+      engine: view?.nodes?.find(n => n.payload?.engine)?.payload?.engine ?? null,
+      artifacts: (view?.nodes ?? [])
+        .filter(n => profile.packageKinds.includes(n.kind) && n.status === NODE_STATUS.SUCCEEDED && n.output)
+        .map(n => n.output),
       completedAt: new Date().toISOString(),
       error: firstFailure ? (firstFailure.error?.message || "Node failed: " + firstFailure.key) : null
     },

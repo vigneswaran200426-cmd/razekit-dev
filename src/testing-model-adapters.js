@@ -60,9 +60,104 @@ function indexHtml(title) {
 `;
 }
 
+/**
+ * A runnable game plan, for a Konami task.
+ *
+ * The App/Web plan below is rejected outright by the game contract — different
+ * step kinds, and a required top-level engine — so a deterministic Fable that
+ * only ever produced web steps could never exercise Konami's execution path.
+ */
+function deterministicGamePlan(title) {
+  return {
+    id: "deterministic-fable-game-plan",
+    version: 1,
+    engine: "godot",
+    steps: [
+      {
+        id: "project-init",
+        kind: "project_init",
+        phase: "repository",
+        engine: "godot",
+        path: "game",
+        projectName: title,
+        projectFile: "config_version=5\n\n[application]\n\n",
+        retries: 1,
+        timeoutMs: 30000
+      },
+      {
+        id: "write-main-scene",
+        kind: "asset_write",
+        phase: "implementation",
+        path: "game/scenes/Main.tscn",
+        content: "[gd_scene format=3]\n\n[node name=\"Main\" type=\"Node2D\"]\n"
+      },
+      {
+        id: "write-player-script",
+        kind: "asset_write",
+        phase: "implementation",
+        path: "game/scripts/Player.gd",
+        content: "extends CharacterBody2D\n\nfunc _physics_process(_delta):\n\tmove_and_slide()\n"
+      },
+      {
+        id: "import-assets",
+        kind: "engine_action",
+        phase: "implementation",
+        engine: "godot",
+        action: "import",
+        retries: 1,
+        timeoutMs: 60000
+      },
+      {
+        id: "playtest",
+        kind: "playtest",
+        phase: "test",
+        engine: "godot",
+        checks: ["project opens", "main scene loads", "player moves"],
+        retries: 1,
+        timeoutMs: 120000
+      },
+      {
+        id: "build",
+        kind: "build",
+        phase: "build",
+        engine: "godot",
+        target: "development",
+        retries: 1,
+        timeoutMs: 300000
+      },
+      {
+        id: "package",
+        kind: "package",
+        phase: "package",
+        engine: "godot",
+        artifactName: "razekit-game",
+        outputDir: "artifacts",
+        retries: 1,
+        timeoutMs: 120000
+      }
+    ]
+  };
+}
+
 export class DeterministicFableAdapter {
   async generate(request) {
-    const title = request.context?.task?.title || "RazeKit build";
+    const task = request.context?.task || {};
+    const title = task.title || "RazeKit build";
+
+    // Konami and Niomi consume different plan contracts, so the test double has
+    // to produce the one the requesting agent can actually run.
+    if (task.type === "game" || task.taskType === "game") {
+      return {
+        output: "Fable implementation pass for " + title,
+        implementation: {
+          status: "implemented",
+          summary: "Created the project, scenes and scripts, then playtested, built and packaged it.",
+          filesChanged: 3
+        },
+        plan: deterministicGamePlan(title),
+        usage: { inputTokens: 100, outputTokens: 80, cost: 0.02 }
+      };
+    }
 
     return {
       output: "Fable implementation pass for " + title,
@@ -178,8 +273,14 @@ export class DeterministicAstraAdapter {
     // The reviewer passes only when the execution evidence says the run
     // completed — the same bar the real Astra prompt sets. A deterministic
     // adapter that always passed would make the review stage decorative.
+    // Each production system records its result under its own key, so the
+    // reviewer has to look where the agent it is reviewing actually wrote.
+    const reviewedTask = request.context?.task || {};
+    const resultKey = (reviewedTask.type === "game" || reviewedTask.taskType === "game")
+      ? "game.execution.lastResult"
+      : "execution.lastResult";
     const execution = request.context?.blackboard?.find?.(
-      entry => entry.key === "execution.lastResult"
+      entry => entry.key === resultKey
     );
     const completed = execution?.value?.status === "completed";
 

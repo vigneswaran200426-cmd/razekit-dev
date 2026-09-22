@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -164,7 +164,12 @@ test("Konami executes project initialization, asset pipeline, playtest, build an
   assert.equal(run.kind, "game");
   assert.equal(run.status, "completed");
   assert.equal(run.engine, GAME_ENGINES.GODOT);
-  assert.equal(run.artifacts[0].artifactId, "game-artifact-1");
+  // The packager now writes a real manifest rather than returning a made-up id,
+  // so the assertion is that an artifact genuinely exists — which is what this
+  // test was always trying to establish.
+  assert.ok(run.artifacts[0].artifactId, "the package step recorded an artifact id");
+  assert.ok(run.artifacts[0].manifest, "the package step recorded a manifest path");
+  await access(path.join(workspace.path, run.artifacts[0].manifest));
 
   const checkpoint = after.stateCheckpoints.find(x => x.scopeId === result.runId);
   assert.ok(checkpoint);

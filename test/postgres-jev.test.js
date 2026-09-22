@@ -210,3 +210,56 @@ suite("cancellation is durable and voids work in flight", async () => {
   assert.equal(view.graph.status, GRAPH_STATUS.CANCELLED);
   assert.ok(view.nodes.every(n => n.status === NODE_STATUS.CANCELLED));
 });
+
+// ── Konami ───────────────────────────────────────────────────────────────────
+
+suite("a Konami game graph persists and schedules on the production store", async () => {
+  const taskId = nextTask();
+  const { GAME_STEP_KINDS, GAME_ENGINES } = await import("../src/game-domain.js");
+  const { graphFromExecutionPlan } = await import("../src/jev-planner.js");
+
+  // Built through the real planner from a real game plan, so this exercises the
+  // game contract rather than hand-written nodes that happen to look like one.
+  const nodes = graphFromExecutionPlan({
+    id: "pg-game-plan",
+    version: 1,
+    engine: GAME_ENGINES.GODOT,
+    steps: [
+      { id: "init", kind: GAME_STEP_KINDS.PROJECT_INIT, engine: GAME_ENGINES.GODOT, path: "game" },
+      { id: "scene", kind: GAME_STEP_KINDS.ASSET_WRITE, path: "game/Main.tscn", content: "x" },
+      { id: "script", kind: GAME_STEP_KINDS.ASSET_WRITE, path: "game/Player.gd", content: "x" },
+      { id: "playtest", kind: GAME_STEP_KINDS.PLAYTEST, checks: ["boots"] },
+      { id: "build", kind: GAME_STEP_KINDS.BUILD, target: "development" }
+    ]
+  }, { taskType: "game" });
+
+  await createTaskGraph({ taskId, tenantId: TENANT, nodes });
+
+  const view = await graphForTask({ taskId, tenantId: TENANT });
+  assert.equal(view.nodes.length, 5, "the game graph survived the round trip to Postgres");
+
+  // The engine travelled into storage with the nodes — a build node read back
+  // from the database has to know which engine to build.
+  assert.equal(view.nodes.find(n => n.key === "build").payload.engine, GAME_ENGINES.GODOT);
+  // Game tool scopes persisted too.
+  assert.ok(view.nodes.find(n => n.key === "playtest").toolScopes.some(x => x.startsWith("game-playtest:")));
+
+  // Only the project init is claimable; the two assets wait behind it.
+  assert.equal(view.nodes.find(n => n.key === "init").status, NODE_STATUS.READY);
+  assert.equal(view.nodes.find(n => n.key === "scene").status, NODE_STATUS.PENDING);
+
+  const init = await claimNextNode({ taskId, tenantId: TENANT, workerId: "w-game", leaseMs: 120_000 });
+  assert.equal(init.node.key, "init");
+  await completeNode({ nodeId: init.node.id, leaseId: init.node.leaseId });
+
+  // Both assets open at once, and two workers take one each.
+  const [a, b] = await Promise.all([
+    claimNextNode({ taskId, tenantId: TENANT, workerId: "w-a", leaseMs: 120_000 }),
+    claimNextNode({ taskId, tenantId: TENANT, workerId: "w-b", leaseMs: 120_000 })
+  ]);
+  assert.deepEqual([a.node.key, b.node.key].sort(), ["scene", "script"]);
+  assert.notEqual(a.node.id, b.node.id, "the same asset node was not handed out twice");
+
+  // The playtest barrier is still refused while an asset is in flight.
+  assert.equal(await claimNextNode({ taskId, tenantId: TENANT, workerId: "w-c" }), null);
+});
