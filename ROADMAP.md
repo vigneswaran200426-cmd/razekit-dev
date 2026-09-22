@@ -267,6 +267,36 @@ completing.
 Not yet done: Konami still uses the flat executor; model phases are not graph
 nodes; `drainGraph` runs inline rather than in a separate worker process.
 
+## Phase 16 — Konami on JEV
+**Status: verified (JSON + real Postgres)**
+
+Konami no longer has its own flat executor on the live path. Both production
+systems run the same node lifecycle; what differs is an execution profile.
+
+Deliverables:
+- `jev-profiles.js`: runtime construction, blackboard keys, plan contract and
+  run kind per agent type; unknown types rejected rather than defaulted
+- Game plan engine stamped onto node payloads, so a node read back from the
+  database knows which engine to act on
+- Game step kinds carry game tool scopes (engine, playtest, build), enforced at
+  the tool broker like any other node
+- Per-node budget, retry, timeout, cancellation, failure propagation, lease
+  fencing and audit — inherited, not reimplemented
+
+Three pre-existing bugs fixed, all from keys hardcoded to App/Web: the
+orchestrator never stored a game plan where Konami reads it, the loop's
+execution gate never fired for a game agent, and the deterministic reviewer
+could not see a game result. The deterministic packager also claimed an
+artifact it never wrote; it now produces a real manifest.
+
+Evidence: 207 local tests (179 pass, 0 fail, 28 skipped), 25 against real Neon.
+The end-to-end test drives the live loop and asserts the flat executor did NOT
+run.
+
+Not yet done: the loop configures no engine adapters, so engine and build steps
+fail as they always have; model phases are still not graph nodes; `drainGraph`
+runs inline rather than in a worker process.
+
 ## Rule for implementation
 
 Do not skip a phase because the next phase is more exciting. Each phase must leave a stable contract that Claude Code can later improve without rewriting the whole system.

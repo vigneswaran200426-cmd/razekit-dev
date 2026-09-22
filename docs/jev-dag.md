@@ -202,11 +202,44 @@ that none is still leased, and that the graph has real dependency edges — so
 "it executes through the graph" is checked, not inferred from the task finishing.
 `postgres-engine.test.js` drives the same loop to completion against real Neon.
 
+## Konami
+
+Both production systems run the same node lifecycle. `jev-profiles.js` holds
+what genuinely differs:
+
+| | Niomi | Konami |
+| --- | --- | --- |
+| Runtime | `AppWebRuntime` (service/browser/deploy adapters) | `GameRuntime` (engine/playtest/packager adapters) |
+| Plan contract | `normalizeModelExecutionPlan` | `normalizeGamePlan` (requires a top-level engine) |
+| Blackboard keys | `execution.*` | `game.execution.*` |
+| Run kind | `jev_graph` | `jev_game_graph` |
+
+Less differs than expected: both runtimes already expose the same
+`execute(step, context)`, so nothing wraps them. An unknown agent type is
+rejected rather than defaulting to App/Web — running a new system through the
+wrong runtime fails deep inside a step instead of at the boundary.
+
+A game plan declares its engine once, at the top. The graph stores nodes, not
+plans, so the planner stamps the engine onto every payload that did not name
+one; otherwise a build node read back from the database has no idea what to
+build.
+
+Moving Konami across surfaced three bugs that had nothing to do with graphs and
+everything to do with keys hardcoded to App/Web: the orchestrator wrote every
+plan to `execution.plan`, so Konami had never received a model plan at all; the
+loop's execution gate read the same key, so once the plan was stored correctly
+the gate stopped firing; and the deterministic reviewer looked for an App/Web
+result and so never passed a game task.
+
+**The loop configures no engine adapters.** An engine or build step fails with
+the same "No game engine adapter is configured" it has always failed with.
+Moving onto JEV does not invent engine support that was never there.
+
 ## Not built yet
 
-- **Konami still uses the flat executor.** Game runtimes have their own adapters
-  and moving them is separate work; the planner understands game step kinds, but
-  the loop routes only Niomi through JEV.
+- **No engine toolchain is configured**, so Konami's engine, build and playtest
+  steps only run where adapters are supplied. `executeGameTask` is retained as
+  `runFlatGameExecution` but the live loop no longer calls it.
 - Nodes are claimed by polling `claimNextNode`, not by an SQS message.
 - Model phases (plan/implement/review) are not themselves graph nodes — only the
   execution plan is. Their spend still goes through the orchestrator.
