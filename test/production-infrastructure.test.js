@@ -458,7 +458,10 @@ test("store migration defaults legacy jobs to CPU", async () => {
 
   const db = await loadDb();
   assert.equal(db.jobs.find(item => item.kind === "legacy").resourceClass, "cpu");
-  assert.equal(db.schemaVersion, 5);
+  // At least the version that introduced this migration. Pinning the exact
+  // number asserts nothing this test is about and breaks on every later
+  // migration; the marker below is what actually proves the migration ran.
+  assert.ok(db.schemaVersion >= 5, "schema is at or past the phase-12 version");
   assert.ok(db.migrationsApplied.includes("phase-12-production-infrastructure"));
 });
 

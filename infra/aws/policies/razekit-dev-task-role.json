@@ -1,0 +1,59 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConsumeTheJobQueue",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+      ],
+      "Resource": "arn:aws:sqs:us-east-2:${AWS_ACCOUNT_ID}:razekit-dev-jobs"
+    },
+    {
+      "Sid": "SendPoisonMessagesToTheDeadLetterQueue",
+      "Effect": "Allow",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:us-east-2:${AWS_ACCOUNT_ID}:razekit-dev-jobs-dlq"
+    },
+    {
+      "Sid": "WriteArtifactsOnlyUnderTheTasksPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::razekit-dev-artifacts-${AWS_ACCOUNT_ID}-us-east-2/tasks/*"
+    },
+    {
+      "Sid": "ListOnlyTheTasksPrefixNeverTheWholeBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::razekit-dev-artifacts-${AWS_ACCOUNT_ID}-us-east-2",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "tasks/*"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyRazekitDevSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-2:${AWS_ACCOUNT_ID}:secret:razekit-dev/*"
+    },
+    {
+      "Sid": "WriteItsOwnLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-2:${AWS_ACCOUNT_ID}:log-group:/razekit-dev/*"
+    }
+  ]
+}

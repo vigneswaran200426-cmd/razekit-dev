@@ -217,6 +217,33 @@ Only after the standalone DEV system is reliable:
 - Preserve standalone Agent Manager isolation
 - Roll out gradually
 
+## Phase 14 — JEV / DAG execution
+**Status: tested (JSON + real Postgres); not yet wired into the autonomous loop**
+
+Until this phase a plan was a flat ordered list executed start to finish. There
+was no dependency model anywhere in execution — `dependsOn` existed only in the
+text of the planner prompt.
+
+Deliverables:
+- Pure dependency model (`src/jev-domain.js`): cycle rejection at the boundary,
+  deterministic topological order, transitive failure propagation to fixpoint,
+  readiness re-derived from dependencies rather than trusted from stored status
+- Durable graph execution (`src/jev.js`) on the existing `transact` primitive —
+  no new SQL, the same advisory lock the job queue already relies on
+- Lease-fenced node claiming, renewal, completion and failure
+- Retry policy driven by a caller-supplied `retryable` classification, never
+  inferred from an error message
+- Worker-death recovery and node deadline timeout kept distinct
+- Cancellation that voids work in flight
+- Tenant-scoped reads and claims
+- Audit row written inside the same transaction as the transition it describes
+
+Evidence: 23 tests on the JSON store, 7 against real Neon including six
+concurrent workers claiming four parallel nodes exactly once each.
+
+Not yet done: the autonomous loop still executes flat plans. Translating a
+planner's steps into a graph, and per-node budget reservation, come next.
+
 ## Rule for implementation
 
 Do not skip a phase because the next phase is more exciting. Each phase must leave a stable contract that Claude Code can later improve without rewriting the whole system.

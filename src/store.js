@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -67,7 +67,9 @@ const initialState = {
   networkPolicies: [],
   observabilityEvents: [],
   metrics: [],
-  alerts: []
+  alerts: [],
+  taskGraphs: [],
+  graphNodes: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -91,6 +93,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-12-production-infrastructure")) {
     db.migrationsApplied.push("phase-12-production-infrastructure");
+  }
+  if (!db.migrationsApplied.includes("phase-14-jev-dag")) {
+    db.migrationsApplied.push("phase-14-jev-dag");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";
