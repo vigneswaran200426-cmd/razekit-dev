@@ -270,8 +270,33 @@ export function claimableNodes(nodes, { resourceClass = null } = {}) {
  * Stored separately it becomes a second source of truth that drifts the first
  * time a transition is missed. Derived, it cannot disagree with the nodes.
  */
+/**
+ * A node that is supposed to produce more work, and whose work does not exist
+ * yet.
+ *
+ * An implementation node's whole purpose is to yield an execution plan that
+ * becomes further nodes. Between it succeeding and those nodes being appended
+ * there is a moment where every node in the graph has succeeded — and without
+ * this, the graph is declared finished in that moment, the task completes
+ * having built nothing, and the expansion is then refused because the graph has
+ * settled.
+ *
+ * A node declares this with `payload.expandsGraph`. It stops counting once
+ * something depends on it, which is precisely when its work has arrived.
+ */
+function awaitsExpansion(node, nodes) {
+  if (!node.payload?.expandsGraph) return false;
+  if (node.status !== NODE_STATUS.SUCCEEDED) return false;
+  return !nodes.some(other => (other.dependsOn ?? []).includes(node.key));
+}
+
 export function deriveGraphStatus(nodes) {
   if (nodes.length === 0) return GRAPH_STATUS.PENDING;
+
+  // Checked before the all-succeeded shortcut, because that is exactly the
+  // state this guards against.
+  if (nodes.some(node => awaitsExpansion(node, nodes))) return GRAPH_STATUS.RUNNING;
+
   if (nodes.every(node => node.status === NODE_STATUS.SUCCEEDED)) return GRAPH_STATUS.SUCCEEDED;
 
   if (nodes.every(isTerminal)) {

@@ -263,3 +263,77 @@ suite("a Konami game graph persists and schedules on the production store", asyn
   // The playtest barrier is still refused while an asset is in flight.
   assert.equal(await claimNextNode({ taskId, tenantId: TENANT, workerId: "w-c" }), null);
 });
+
+// ── Model nodes ──────────────────────────────────────────────────────────────
+
+suite("a model graph expands durably on the production store", async () => {
+  const taskId = nextTask();
+  const { MODEL_NODE_KINDS } = await import("../src/jev-model-domain.js");
+  const { expandGraph } = await import("../src/jev.js");
+
+  // plan -> implement, with the implementation declaring that it will produce
+  // more work. That declaration is what stops the graph reporting itself
+  // finished in the window before the execution nodes exist.
+  await createTaskGraph({
+    taskId, tenantId: TENANT,
+    nodes: [
+      { key: "astra-plan", kind: MODEL_NODE_KINDS.MODEL_PLAN, dependsOn: [], payload: { agent: "astra" } },
+      {
+        key: "fable-implement", kind: MODEL_NODE_KINDS.MODEL_IMPLEMENT, dependsOn: ["astra-plan"],
+        payload: { agent: "fable", expandsGraph: true }
+      }
+    ]
+  });
+
+  const plan = await claimNextNode({ taskId, tenantId: TENANT, workerId: "w", leaseMs: 120_000 });
+  assert.equal(plan.node.key, "astra-plan");
+  await completeNode({ nodeId: plan.node.id, leaseId: plan.node.leaseId, output: { structured: { plan: { id: "p" } } } });
+
+  const impl = await claimNextNode({ taskId, tenantId: TENANT, workerId: "w", leaseMs: 120_000 });
+  assert.equal(impl.node.key, "fable-implement");
+  await completeNode({ nodeId: impl.node.id, leaseId: impl.node.leaseId, output: { structured: { plan: { id: "p" } } } });
+
+  // Every node has succeeded — but the graph must NOT be finished, because the
+  // implementation has not yet yielded its execution nodes.
+  let view = await graphForTask({ taskId, tenantId: TENANT, includeFinished: true });
+  assert.equal(view.graph.status, GRAPH_STATUS.RUNNING, "a graph awaiting expansion is not finished");
+
+  const expanded = await expandGraph({
+    graphId: view.graph.id,
+    nodes: [{ key: "exec1:write", kind: "workspace_write_file", dependsOn: ["fable-implement"] }],
+    reason: "execution plan"
+  });
+  assert.deepEqual(expanded.added.map(n => n.key), ["exec1:write"]);
+  // The appended node opened immediately, because its dependency had succeeded.
+  assert.deepEqual(expanded.opened.map(o => o.key), ["exec1:write"]);
+
+  view = await graphForTask({ taskId, tenantId: TENANT });
+  assert.equal(view.nodes.length, 3, "the expansion is durable");
+  const exec = await claimNextNode({ taskId, tenantId: TENANT, workerId: "w", leaseMs: 120_000 });
+  assert.equal(exec.node.key, "exec1:write");
+});
+
+suite("a graph reopened for repair is expandable; a cancelled one is not", async () => {
+  const taskId = nextTask();
+  const { expandGraph, cancelGraph } = await import("../src/jev.js");
+
+  await createTaskGraph({ taskId, tenantId: TENANT, nodes: [node("only")] });
+  const claim = await claimNextNode({ taskId, tenantId: TENANT, workerId: "w", leaseMs: 120_000 });
+  await completeNode({ nodeId: claim.node.id, leaseId: claim.node.leaseId });
+
+  let view = await graphForTask({ taskId, tenantId: TENANT, includeFinished: true });
+  assert.equal(view.graph.status, GRAPH_STATUS.SUCCEEDED);
+
+  // Success is not final while more work can legitimately be asked for.
+  const expanded = await expandGraph({
+    graphId: view.graph.id, nodes: [{ key: "repair", dependsOn: ["only"] }], reason: "review requested a revision"
+  });
+  assert.deepEqual(expanded.added.map(n => n.key), ["repair"]);
+
+  // Cancellation IS final.
+  await cancelGraph({ graphId: view.graph.id, reason: "operator stopped the task" });
+  await assert.rejects(
+    () => expandGraph({ graphId: view.graph.id, nodes: [{ key: "later", dependsOn: [] }] }),
+    /Cannot expand a graph that is/
+  );
+});

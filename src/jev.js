@@ -1,8 +1,8 @@
 import { id, transact } from "./store.js";
 import { redactAuditValue, DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./tenant-security.js";
 import {
-  NODE_STATUS,
   GRAPH_STATUS,
+  NODE_STATUS,
   applyReadiness,
   assertGraphShape,
   claimableNodes,
@@ -181,6 +181,122 @@ export async function createTaskGraph({
     });
 
     return { graph, nodes: stored.map(node => ({ ...node })) };
+  });
+}
+
+// ── Expansion ────────────────────────────────────────────────────────────────
+
+/**
+ * Add nodes to a graph that is already running.
+ *
+ * A plan is not fully known when the graph is created: what Fable implements
+ * depends on what Astra planned, and whether a repair branch exists depends on
+ * what the review found. Without expansion the only ways to model that are a
+ * graph containing every branch that might ever be needed — which reserves
+ * budget for work that will not happen — or tearing the graph down and
+ * rebuilding it, which destroys the evidence of what already ran.
+ *
+ * New nodes may depend on existing ones. Existing nodes are never modified:
+ * their status, output and attempt history are the record of what happened, and
+ * a repair cycle appends node #7 rather than rewriting node #5 to pretend it
+ * produced the final result.
+ *
+ * The combined graph is validated as a whole, so an expansion that would close
+ * a cycle is rejected before anything is stored.
+ */
+export async function expandGraph({ graphId, nodes, reason = "graph expanded", now = new Date() }) {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    throw new Error("Graph expansion requires at least one node");
+  }
+
+  return transact(db => {
+    const graph = db.taskGraphs.find(item => item.id === graphId);
+    if (!graph) throw new Error("Unknown execution graph: " + graphId);
+    // A graph that merely SUCCEEDED may still be expanded: a review that asks
+    // for a repair arrives after every node has succeeded, and refusing it
+    // there would make the repair cycle impossible. Reopening success is what a
+    // repair cycle IS.
+    //
+    // Failure and cancellation are different and stay closed. Those were
+    // decided — by a defect or by an operator — and quietly reopening them
+    // would change a final status behind whoever set it.
+    if (graph.status === GRAPH_STATUS.FAILED || graph.status === GRAPH_STATUS.CANCELLED) {
+      throw new Error("Cannot expand a graph that is " + graph.status);
+    }
+
+    const existing = nodesOfGraph(db, graphId);
+    const existingKeys = new Set(existing.map(item => item.key));
+    let order = existing.reduce((max, item) => Math.max(max, Number(item.order ?? 0)), -1);
+
+    const prepared = nodes.map(node => {
+      const key = String(node?.key ?? "").trim();
+      if (!key) throw new Error("Every graph node requires a key");
+      if (existingKeys.has(key)) {
+        throw new Error("Graph already contains a node with key: " + key);
+      }
+      existingKeys.add(key);
+      order += 1;
+      return {
+        key,
+        kind: node.kind ?? "implementation",
+        description: node.description ?? "",
+        dependsOn: [...(node.dependsOn ?? [])],
+        order,
+        payload: node.payload ?? null,
+        resourceClass: node.resourceClass ?? "cpu",
+        maxAttempts: Math.max(1, Number(node.maxAttempts ?? 3)),
+        timeoutMs: Math.max(0, Number(node.timeoutMs ?? 0)),
+        budgetMinor: Math.max(0, Number(node.budgetMinor ?? 0)),
+        toolScopes: node.toolScopes ? [...node.toolScopes] : null,
+        status: NODE_STATUS.PENDING
+      };
+    });
+
+    // Validate the union, not the addition. A new node whose dependency closes
+    // a cycle through the existing graph is only visible from the whole.
+    assertGraphShape([
+      ...existing.map(item => ({ key: item.key, dependsOn: item.dependsOn ?? [], order: item.order })),
+      ...prepared
+    ]);
+
+    for (const node of prepared) {
+      db.graphNodes.push({
+        id: id("node"),
+        graphId,
+        tenantId: graph.tenantId,
+        userId: graph.userId,
+        taskId: graph.taskId,
+        ...node,
+        attempt: 0,
+        leaseId: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        deadlineAt: null,
+        startedAt: null,
+        finishedAt: null,
+        output: null,
+        error: null,
+        skippedBecause: null,
+        createdAt: iso(now),
+        updatedAt: iso(now)
+      });
+    }
+
+    const all = nodesOfGraph(db, graphId);
+    const opened = applyReadiness(all);
+    refreshGraph(db, graph, now);
+
+    auditInTransaction(db, {
+      tenantId: graph.tenantId, userId: graph.userId, action: "graph.expanded",
+      resourceId: graph.id, now,
+      metadata: { reason, added: prepared.map(n => n.key), opened }
+    });
+
+    return {
+      graph: { ...graph },
+      added: all.filter(n => prepared.some(p => p.key === n.key)).map(n => ({ ...n })),
+      opened
+    };
   });
 }
 

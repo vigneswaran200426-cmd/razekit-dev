@@ -8,6 +8,8 @@ import { writeBlackboard } from "./blackboard.js";
 import { writeCheckpoint } from "./reliability.js";
 import { tenantForTask } from "./tenant-security.js";
 import { profileForAgent } from "./jev-profiles.js";
+import { isModelNodeKind } from "./jev-model-domain.js";
+import { executeModelNode, compileModelContext, recordModelPhaseEvent } from "./jev-model-executor.js";
 import { readNumberEnv } from "./adapters/model-json.js";
 
 // Draining a task's graph.
@@ -130,6 +132,7 @@ export async function executeNextNode({
   workspaceRoot,
   runtime = null,
   adapters = {},
+  modelRegistry = null,
   taskId = null,
   tenantId = null,
   workerId = "inline-worker",
@@ -150,6 +153,18 @@ export async function executeNextNode({
   if (!claim) return null;
 
   const { node } = claim;
+
+  // ── A model node settles its own budget ───────────────────────────────────
+  //
+  // Reserve-before-call has to happen around the provider request itself, not
+  // around this whole function, so the model executor owns that window. It
+  // returns through the same success/failure path as everything else, which is
+  // why there is still exactly one settlement per node.
+  if (isModelNodeKind(node.kind)) {
+    return executeModelNodeThroughGraph({
+      node, agent, profile, modelRegistry, now, agentInstanceId
+    });
+  }
 
   // ── Budget, before any work ───────────────────────────────────────────────
   const hold = await reserveNodeBudget({ node, agentInstanceId });
@@ -298,6 +313,7 @@ export async function drainGraph({
   workspaceRoot,
   runtime = null,
   adapters = {},
+  modelRegistry = null,
   workerId = "inline-worker",
   maxSteps = 200,
   now = () => new Date()
@@ -334,6 +350,7 @@ export async function drainGraph({
       workspaceRoot,
       runtime,
       adapters,
+      modelRegistry,
       tenantId,
       workerId,
       now: now()
@@ -413,6 +430,121 @@ export async function drainGraph({
   );
 
   return { runId, status, executed, steps, summary: view?.summary ?? null, graph: view?.graph ?? null };
+}
+
+/**
+ * Run a claimed model node and settle it through the ordinary JEV lifecycle.
+ *
+ * The node is already claimed and leased by the caller. This adds nothing to
+ * that lifecycle: it completes or fails the node with the same lease fence, the
+ * same retry classification and the same failure propagation a file write gets.
+ * What differs is only that the work is a provider call, and that the budget
+ * window is opened and closed around that call by the model executor.
+ */
+async function executeModelNodeThroughGraph({ node, agent, profile, modelRegistry, now, agentInstanceId }) {
+  if (!modelRegistry) {
+    // Failing closed rather than skipping: a graph that silently dropped its
+    // planning node would run an implementation against no plan at all.
+    const result = await failNode({
+      nodeId: node.id, leaseId: node.leaseId,
+      error: "No model registry is configured for this worker",
+      retryable: false, now
+    });
+    return { node: result.node, status: "failed", error: "No model registry is configured", skipped: result.skipped };
+  }
+
+  const db = await loadDb();
+  const task = db.tasks.find(item => item.id === agent.taskId);
+  const graphNodes = db.graphNodes.filter(item => item.graphId === node.graphId);
+  const blackboard = db.agentBlackboards
+    .filter(item => item.agentInstanceId === agent.id)
+    .map(item => ({ key: item.key, value: safeParse(item.value) }));
+
+  const context = await compileModelContext({ agent, task, node, graphNodes, blackboard });
+
+  await recordModelPhaseEvent({
+    agentInstanceId, taskId: agent.taskId, node, status: "started",
+    detail: { kind: node.kind, attempt: node.attempt }
+  });
+
+  let output = null;
+  let failure = null;
+  try {
+    output = await executeModelNode({ node, agent, registry: modelRegistry, context, profile, now });
+  } catch (error) {
+    failure = error;
+  }
+
+  // The model executor reports a budget refusal rather than throwing, because a
+  // node that cannot be afforded is an ordinary graph outcome.
+  if (output?.budgetRefused) {
+    const result = await failNode({
+      nodeId: node.id, leaseId: node.leaseId,
+      error: "Budget refused: " + output.reason,
+      retryable: false, now
+    });
+    await writeBlackboard(
+      agentInstanceId,
+      profile.keys.lastResult + ".budgetRefusal",
+      { nodeKey: node.key, limit: output.limit, reason: output.reason, model: true },
+      "jev-model-executor"
+    );
+    await recordModelPhaseEvent({
+      agentInstanceId, taskId: agent.taskId, node, status: "budget_refused",
+      detail: { reason: output.reason }
+    });
+    return {
+      node: result.node, status: "budget_refused",
+      limit: output.limit, reason: output.reason, skipped: result.skipped
+    };
+  }
+
+  if (failure) {
+    // An unknown provider outcome is never retried — the call may already have
+    // been served and billed, and a retry would pay for it twice.
+    const retryable = failure.outcomeUnknown
+      ? false
+      : Boolean(failure?.retryable);
+
+    const result = await failNode({
+      nodeId: node.id, leaseId: node.leaseId,
+      error: failure.message || "Model node failed",
+      retryable, now
+    });
+    await recordModelPhaseEvent({
+      agentInstanceId, taskId: agent.taskId, node,
+      status: failure.outcomeUnknown ? "outcome_unknown" : "failed",
+      detail: { error: failure.message, retryable }
+    });
+    return {
+      node: result.node,
+      status: failure.outcomeUnknown ? "outcome_unknown"
+        : result.willRetry ? "retry_scheduled" : "failed",
+      error: failure.message,
+      outcomeUnknown: Boolean(failure.outcomeUnknown),
+      modelResult: failure.modelNodeResult ?? null,
+      skipped: result.skipped
+    };
+  }
+
+  const done = await completeNode({ nodeId: node.id, leaseId: node.leaseId, output, now });
+  await recordModelPhaseEvent({
+    agentInstanceId, taskId: agent.taskId, node, status: "succeeded",
+    detail: { costMinor: output.costMinor, provider: output.provider, model: output.model }
+  });
+
+  return {
+    node: done.node,
+    status: done.accepted ? "succeeded" : "lease_lost",
+    unblocked: done.unblocked,
+    output,
+    modelResult: output
+  };
+}
+
+function safeParse(value) {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value); } catch { return value; }
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
