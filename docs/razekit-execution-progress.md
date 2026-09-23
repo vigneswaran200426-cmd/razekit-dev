@@ -82,7 +82,7 @@ phase by phase.
 | Suite | Result |
 |---|---|
 | Local (`npm test`) | 293 tests — 262 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
-| Real Neon | 27 pass, 0 fail; store and JEV suites re-run at schema 9 |
+| Real Neon | 27 pass, 0 fail, all four suites re-run at schema 9 |
 
 ## Known defects and weaknesses
 
