@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -78,7 +78,11 @@ const initialState = {
   // What a user was shown before they agreed to a task. Kept because it is the
   // record of what was consented to: an authorization that cannot be traced to
   // something a person actually read is not one.
-  taskPreviews: []
+  taskPreviews: [],
+  // Append-only. What the task was asked to do, at each point it was asked.
+  // Flattening these into one specification field is how "what was this work
+  // authorized against" stops being answerable.
+  taskInstructions: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -111,6 +115,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-18-task-lifecycle")) {
     db.migrationsApplied.push("phase-18-task-lifecycle");
+  }
+  if (!db.migrationsApplied.includes("phase-19-instruction-versions")) {
+    db.migrationsApplied.push("phase-19-instruction-versions");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";

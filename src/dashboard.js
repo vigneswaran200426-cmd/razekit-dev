@@ -1,4 +1,5 @@
 import { id, loadDb, transact } from "./store.js";
+import { appendInstructionVersion } from "./task-instructions.js";
 import { AGENT_STATUS, TASK_STATUS } from "./domain.js";
 import { latestVerification } from "./verification.js";
 import { addAgentMessage } from "./agent-manager.js";
@@ -369,7 +370,10 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
 
     task.maxBudget = Math.max(Number(task.maxBudget), requestedBudget);
     task.updatedAt = new Date().toISOString();
-    task.specification = [task.specification, "User change: " + change.content].filter(Boolean).join("\n\n");
+    // The specification is NOT edited here any more. An approved change
+    // produces a new instruction version below, and rewriting the field in
+    // place is what made "what did the user actually ask for" unanswerable
+    // after the third change.
     if (!Array.isArray(task.userChanges)) task.userChanges = [];
     task.userChanges.push({ id: change.id, content: change.content, createdAt: new Date().toISOString() });
 
@@ -393,9 +397,20 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
     return { change, task, agent };
   });
 
+  // Append-only, and after the transaction: the version records what was
+  // approved, so it must not exist if the approval did not.
+  const instruction = await appendInstructionVersion({
+    taskId,
+    changeId: result.change.id,
+    addition: "User change: " + result.change.content,
+    reason: "approved change",
+    authoredBy: result.task.userId || "user"
+  });
+
   await addAgentMessage(result.agent.id, "user", result.change.content, {
     source: "task-dashboard",
     changeId: result.change.id,
+    instructionVersion: instruction.version,
     approved: true
   });
   await writeAudit({
@@ -403,9 +418,13 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
     action: "task.change.approve",
     resourceType: "task",
     resourceId: taskId,
-    metadata: { changeId: result.change.id, budget: result.change.budgetSnapshot }
+    metadata: {
+      changeId: result.change.id,
+      budget: result.change.budgetSnapshot,
+      instructionVersion: instruction.version
+    }
   });
-  return result;
+  return { ...result, instruction };
 }
 
 export async function denyChange(taskId, changeId, reason = "User declined the requested change") {

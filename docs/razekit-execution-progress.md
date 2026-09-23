@@ -21,9 +21,9 @@ Completion states are used literally:
 
 ## Current phase
 
-**Phase 13 — running-task changes.** A user changing an active task should get
-an impact analysis, a preview, a new instruction version and a replan — never a
-mutated historical record.
+**Phase 13, partly done.** Instruction versions and impact analysis are in.
+The replan — turning an approved change into new graph nodes rather than a
+restarted task — is not.
 
 ## Completed
 
@@ -45,11 +45,14 @@ mutated historical record.
 | 10 | **Authorization prediction** | VERIFIED | same files: prediction is labelled as prediction, reads the request rather than calling a paid model, and never becomes an authorization without a matching confirmation |
 | 11 | **Runtime permission escalation** | VERIFIED | `test/user-actions.test.js`: an approval is a single use by default, a step-scoped one does not leak to another step, only a task-scoped one widens the standing authorization, and approving reopens the step that was refused |
 | 12 | **User action surface** | VERIFIED | same file, plus the Control Center: permission, credential, decision, reconciliation and budget waits in one list, blocking first, tenant-scoped. Verified in a browser — a blocked task shows the request, "Allow once" grants exactly one use, the next attempt asks again. |
+| 13a | **Instruction versions and change impact** | VERIFIED | `test/task-instructions.test.js`: history is append-only, version one survives every later change, and an impact analysis names the permissions a change would need as well as its cost |
 | 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
 ## In progress
 
-Nothing.
+| # | Phase | State | What remains |
+|---|---|---|---|
+| 13b | Replan after an approved change | NOT STARTED | An approved change updates the instruction, and the models see the new version on their next node — but the running graph is not re-shaped, so a change arriving after the plan was built influences the next cycle rather than the current one. Doing it properly means appending a `model_replan` node and an implementation that depends on it, and the cycle-numbering rule in `nextModelGraphAction` has to be generalised first. Half-doing it would corrupt the cycle sequence that the repair and verify paths depend on. |
 
 ## Not started
 
@@ -77,8 +80,8 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 283 tests — 252 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
-| Real Neon | 27 pass, 0 fail, at schema 8 |
+| Local (`npm test`) | 288 tests — 257 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Real Neon | 27 pass, 0 fail; store and JEV suites re-run at schema 9 |
 
 ## Known defects and weaknesses
 
@@ -114,7 +117,12 @@ phase by phase.
 
 ## Next exact action
 
-Phase 13 — running task changes. `submitUserCommand` already analyses a change and can require
+Phase 13b — replan. Generalise `nextModelGraphAction`'s cycle derivation from
+"count the review nodes" to "the highest cycle number present across
+`astra-review-N`, `fable-repair-N` and `execN:`", which is what allows a node
+pair to be appended out of band. Then `expandWithReplan` can append
+`astra-replan-N` plus the implementation that depends on it, and an approved
+change re-shapes the running graph instead of waiting for the next cycle. `submitUserCommand` already analyses a change and can require
 approval; what is missing is the instruction VERSION (historical records are
 never mutated), the impact analysis covering permissions and budget as well as
 requirements, and the replan that turns an approved change into new graph nodes

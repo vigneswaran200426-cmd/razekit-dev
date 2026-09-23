@@ -31,6 +31,7 @@ import { listModelSessions } from "./model-sessions.js";
 import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { listTools, requiredScopesForTools } from "./tool-registry.js";
 import { pendingUserActions, resolvePermissionAction } from "./user-actions.js";
+import { analyzeChangeImpact, instructionHistory } from "./task-instructions.js";
 import {
   EXECUTION_LEVELS,
   authorizeFromPreview,
@@ -505,6 +506,22 @@ const server = http.createServer(async (req,res) => {
     // Everything this task is waiting on a person for. The point of the
     // endpoint is that "why has this not moved" has an answer that is not
     // "read the logs".
+    // What a change would do, before anyone agrees to it. Costs nothing and
+    // changes nothing; the same separation the task preview makes.
+    m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/impact$/);
+    if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
+      const i=await body(req);
+      if(!i.content?.trim()) return json(res,400,{error:"content is required"});
+      return json(res,200,await analyzeChangeImpact({taskId:m[1],content:i.content.trim()}));
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/instructions$/);
+    if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
+      return json(res,200,{versions:await instructionHistory(m[1])});
+    }
+
     m=p.match(/^\/api\/tasks\/([^/]+)\/actions$/);
     if(req.method==="GET"&&m){
       await assertTaskAccess(m[1], principal);
