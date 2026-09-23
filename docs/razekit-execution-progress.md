@@ -45,6 +45,7 @@ restarted task — is not.
 | 10 | **Authorization prediction** | VERIFIED | same files: prediction is labelled as prediction, reads the request rather than calling a paid model, and never becomes an authorization without a matching confirmation |
 | 11 | **Runtime permission escalation** | VERIFIED | `test/user-actions.test.js`: an approval is a single use by default, a step-scoped one does not leak to another step, only a task-scoped one widens the standing authorization, and approving reopens the step that was refused |
 | 12 | **User action surface** | VERIFIED | same file, plus the Control Center: permission, credential, decision, reconciliation and budget waits in one list, blocking first, tenant-scoped. Verified in a browser — a blocked task shows the request, "Allow once" grants exactly one use, the next attempt asks again. |
+| 15 | **Live graph in the Control Center** | VERIFIED | `test/task-graph-view.test.js` and a browser run: the real nodes, statuses, dependency edges, attempts, lease owner and per-node cost. The payload never reaches the projection. |
 | 13a | **Instruction versions and change impact** | VERIFIED | `test/task-instructions.test.js`: history is append-only, version one survives every later change, and an impact analysis names the permissions a change would need as well as its cost |
 | 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
@@ -56,7 +57,7 @@ restarted task — is not.
 
 ## Not started
 
-Phases 13–24 (running-task changes, Control Center, live preview, payment core, UroPay, payment security,
+Phases 14 and 16–24 (Control Center tabs, live preview, payment core, UroPay, payment security,
 reconciliation, payouts, admin finance, admin control centre), 26–28 (cloud,
 worker pools, scale), 29–32 (real providers, Konami engine, Kit), 33–39 (UI),
 40–42 (Dev Department, notifications), 43–47 (resilience, idempotency,
@@ -80,7 +81,7 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 288 tests — 257 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Local (`npm test`) | 293 tests — 262 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
 | Real Neon | 27 pass, 0 fail; store and JEV suites re-run at schema 9 |
 
 ## Known defects and weaknesses

@@ -25,6 +25,11 @@ test("standalone frontend contains the complete task control surface", () => {
   assert.match(dashboardPage, /data-allow/);
   assert.match(dashboardPage, /data-scope/);
   assert.match(dashboardPage, /answerAction/);
+  // The real graph, from the API. A diagram that does not correspond to what
+  // is executing is worse than none, because it is believed.
+  assert.match(dashboardPage, /Execution graph/);
+  assert.match(dashboardPage, /graphPanel/);
+  assert.match(dashboardPage, /\/graph"/);
   assert.match(dashboardPage, /WORKING|DECISION NEEDED|IMPORTANT UPDATE|BLOCKED|COMPLETED/);
   assert.match(dashboardPage, /Tell the agent what to change/);
   assert.match(dashboardPage, /Approve/);

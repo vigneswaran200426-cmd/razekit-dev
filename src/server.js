@@ -32,6 +32,7 @@ import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { listTools, requiredScopesForTools } from "./tool-registry.js";
 import { pendingUserActions, resolvePermissionAction } from "./user-actions.js";
 import { analyzeChangeImpact, instructionHistory } from "./task-instructions.js";
+import { taskGraphView } from "./task-graph-view.js";
 import {
   EXECUTION_LEVELS,
   authorizeFromPreview,
@@ -514,6 +515,17 @@ const server = http.createServer(async (req,res) => {
       const i=await body(req);
       if(!i.content?.trim()) return json(res,400,{error:"content is required"});
       return json(res,200,await analyzeChangeImpact({taskId:m[1],content:i.content.trim()}));
+    }
+
+    // The real graph. Never a synthesised one: a diagram that does not
+    // correspond to what is executing is worse than no diagram, because it is
+    // believed.
+    m=p.match(/^\/api\/tasks\/([^/]+)\/graph$/);
+    if(req.method==="GET"&&m){
+      const task=await assertTaskAccess(m[1], principal);
+      const view=await taskGraphView({taskId:m[1],tenantId:task.tenantId||principal.tenantId});
+      if(!view) return json(res,404,{error:"This task has no execution graph yet"});
+      return json(res,200,view);
     }
 
     m=p.match(/^\/api\/tasks\/([^/]+)\/instructions$/);
