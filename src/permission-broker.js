@@ -3,6 +3,19 @@ import { getAgent } from "./agent-manager.js";
 import { getTool, requiredScopesForTools } from "./tool-registry.js";
 import { AGENT_STATUS, TASK_STATUS } from "./domain.js";
 
+// How far an approval reaches.
+//
+// The default is the narrowest one that can be. An approval is the user saying
+// yes to a thing they were shown; stretching it to cover things they were not
+// shown is how a single "go ahead" becomes a standing permission nobody
+// remembers granting. Wider scopes exist because clicking approve forty times
+// for forty file writes is its own kind of failure — but the user chooses them.
+export const APPROVAL_SCOPE = {
+  ONCE: "once",
+  NODE: "node",
+  TASK: "task"
+};
+
 const APPROVAL_STATUS = {
   PENDING: "pending",
   APPROVED: "approved",
@@ -80,7 +93,48 @@ export async function provisionPermissions(agent) {
   });
 }
 
-export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
+/**
+ * Spend any narrow grants that cover the scopes still missing.
+ *
+ * Returns what was consumed and what is still missing, so the caller can tell
+ * the difference between "allowed because the user said yes once" and "allowed
+ * because the task was authorized for it" — a distinction the audit trail needs
+ * and the user deserves.
+ */
+async function consumeScopedGrants({ agentInstanceId, toolKey, nodeId, scopes }) {
+  return transact(db => {
+    const permission = db.toolPermissions.find(x => x.agentInstanceId === agentInstanceId);
+    if (!permission) return { stillMissing: scopes, consumed: [] };
+    permission.scopedGrants = permission.scopedGrants || [];
+
+    const now = Date.now();
+    const remaining = new Set(scopes);
+    const consumed = [];
+
+    for (const grant of permission.scopedGrants) {
+      if (remaining.size === 0) break;
+      if (grant.toolKey !== toolKey) continue;
+      if (grant.expiresAt && Date.parse(grant.expiresAt) <= now) continue;
+      if (grant.usesRemaining !== null && grant.usesRemaining <= 0) continue;
+      // A node-scoped grant is for THAT node. Applying it to another node would
+      // be the approval reaching past what the user was shown.
+      if (grant.scope === APPROVAL_SCOPE.NODE && grant.nodeId !== nodeId) continue;
+
+      const covers = grant.scopes.filter(scope => remaining.has(scope));
+      if (covers.length === 0) continue;
+
+      for (const scope of covers) remaining.delete(scope);
+      if (grant.usesRemaining !== null) grant.usesRemaining -= 1;
+      grant.lastUsedAt = new Date().toISOString();
+      consumed.push({ grantId: grant.id, scope: grant.scope, scopes: covers, nodeId: grant.nodeId ?? null });
+    }
+
+    permission.updatedAt = new Date().toISOString();
+    return { stillMissing: [...remaining], consumed };
+  });
+}
+
+export async function authorizeToolCall(agentInstanceId, toolKey, scopes = [], { nodeId = null } = {}) {
   const agent = await getAgent(agentInstanceId);
   if (!agent) throw new Error("Agent instance not found");
   const tool = getTool(toolKey);
@@ -103,7 +157,20 @@ export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
 
   let permission = await provisionPermissions(agent);
   const granted = scopeSet(permission.grantedScopes);
-  const missing = requested.filter(scope => !granted.has(scope));
+  let missing = requested.filter(scope => !granted.has(scope));
+
+  // A narrower grant can still cover what the task-wide one does not. Consumed
+  // at the point of authorization rather than after the work: the permission
+  // was spent on attempting the action, and a failed attempt that silently
+  // restored the grant would let a retry loop spend one approval many times.
+  let consumedGrants = [];
+  if (missing.length > 0) {
+    const consumption = await consumeScopedGrants({
+      agentInstanceId, toolKey, nodeId, scopes: missing
+    });
+    missing = consumption.stillMissing;
+    consumedGrants = consumption.consumed;
+  }
 
   if (missing.length === 0) {
     return {
@@ -111,6 +178,7 @@ export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
       tool,
       requestedScopes: requested,
       grantedScopes: requested,
+      consumedGrants,
       permissionRequest: null
     };
   }
@@ -131,6 +199,7 @@ export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
       agentInstanceId,
       taskId: agent.taskId,
       toolKey,
+      nodeId,
       scopes: missing,
       reason: "New tool permission required",
       status: APPROVAL_STATUS.PENDING,
@@ -155,7 +224,25 @@ export async function authorizeToolCall(agentInstanceId, toolKey, scopes = []) {
   };
 }
 
-export async function approvePermission(permissionRequestId, expiresAt = null) {
+/**
+ * Approve a permission request, for as long as the user said and no longer.
+ *
+ * `scope` defaults to ONCE. That default is the whole design: the previous
+ * behaviour granted every approval for the lifetime of the task, so one yes to
+ * one file write authorized every later write nobody asked about.
+ */
+export async function approvePermission(permissionRequestId, expiresAtOrOptions = null) {
+  const options = typeof expiresAtOrOptions === "object" && expiresAtOrOptions !== null
+    ? expiresAtOrOptions
+    : { expiresAt: expiresAtOrOptions };
+  const scope = options.scope || APPROVAL_SCOPE.ONCE;
+  const expiresAt = options.expiresAt ?? null;
+  const approvedBy = options.approvedBy ?? null;
+
+  if (!Object.values(APPROVAL_SCOPE).includes(scope)) {
+    throw new Error("Unknown approval scope: " + scope);
+  }
+
   const request = await transact(db => {
     const item = db.permissionRequests.find(x => x.id === permissionRequestId);
     if (!item) throw new Error("Permission request not found");
@@ -166,12 +253,33 @@ export async function approvePermission(permissionRequestId, expiresAt = null) {
 
     item.status = APPROVAL_STATUS.APPROVED;
     item.expiresAt = expiresAt;
+    item.approvalScope = scope;
+    item.approvedBy = approvedBy;
     item.updatedAt = new Date().toISOString();
 
     const permission = db.toolPermissions.find(x => x.agentInstanceId === item.agentInstanceId);
     if (!permission) throw new Error("Tool permission record not found");
 
-    permission.grantedScopes = [...new Set([...permission.grantedScopes, ...item.scopes])];
+    if (scope === APPROVAL_SCOPE.TASK) {
+      // The only scope that widens the task's standing authorization.
+      permission.grantedScopes = [...new Set([...permission.grantedScopes, ...item.scopes])];
+    } else {
+      permission.scopedGrants = permission.scopedGrants || [];
+      permission.scopedGrants.push({
+        id: id("grant"),
+        toolKey: item.toolKey,
+        nodeId: item.nodeId ?? null,
+        scope,
+        scopes: [...item.scopes],
+        // ONCE is literal. NODE lasts as long as the node it was granted for.
+        usesRemaining: scope === APPROVAL_SCOPE.ONCE ? 1 : null,
+        expiresAt,
+        grantedBy: approvedBy,
+        createdAt: item.updatedAt,
+        lastUsedAt: null
+      });
+    }
+
     permission.updatedAt = item.updatedAt;
     return item;
   });

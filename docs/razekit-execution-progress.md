@@ -21,10 +21,9 @@ Completion states are used literally:
 
 ## Current phase
 
-**Phase 11/12 — runtime permission escalation and user actions.** A task that
-meets a scope it was not pre-authorized for must stop, surface a request, and
-resume on approval. The broker already refuses; what is missing is the request,
-the waiting state and the resume.
+**Phase 13 — running-task changes.** A user changing an active task should get
+an impact analysis, a preview, a new instruction version and a replan — never a
+mutated historical record.
 
 ## Completed
 
@@ -44,6 +43,8 @@ the waiting state and the resume.
 | 8 | **Task creation lifecycle** | VERIFIED | `test/task-lifecycle.test.js` and `test/task-api.test.js`: a preview creates nothing and grants nothing; a task cannot be created without a confirmed one; tools added after the preview are refused |
 | 9 | **Execution levels (LOW / MID / HIGH / CUSTOM)** | VERIFIED | same files: a higher level is a wider envelope, never a pre-approval for deployment or a data write; a custom policy is validated whole or rejected whole |
 | 10 | **Authorization prediction** | VERIFIED | same files: prediction is labelled as prediction, reads the request rather than calling a paid model, and never becomes an authorization without a matching confirmation |
+| 11 | **Runtime permission escalation** | VERIFIED | `test/user-actions.test.js`: an approval is a single use by default, a step-scoped one does not leak to another step, only a task-scoped one widens the standing authorization, and approving reopens the step that was refused |
+| 12 | **User action surface** | VERIFIED | same file: permission, credential, decision, reconciliation and budget waits in one list, blocking first, tenant-scoped |
 | 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
 ## In progress
@@ -52,8 +53,7 @@ Nothing.
 
 ## Not started
 
-Phases 11–24 (runtime permission escalation, user actions, running-task changes,
-Control Center, live preview, payment core, UroPay, payment security,
+Phases 13–24 (running-task changes, Control Center, live preview, payment core, UroPay, payment security,
 reconciliation, payouts, admin finance, admin control centre), 26–28 (cloud,
 worker pools, scale), 29–32 (real providers, Konami engine, Kit), 33–39 (UI),
 40–42 (Dev Department, notifications), 43–47 (resilience, idempotency,
@@ -77,8 +77,8 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 276 tests — 245 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`). Run three times consecutively with no flakes. |
-| Real Neon | 27 pass, 0 fail; run with `RAZEKIT_DATABASE_URL` set |
+| Local (`npm test`) | 283 tests — 252 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Real Neon | 27 pass, 0 fail, at schema 8 |
 
 ## Known defects and weaknesses
 
@@ -108,20 +108,19 @@ phase by phase.
   primitives are proven cross-process against Neon, but the worker LOOP itself
   has not been run as several OS processes against Neon simultaneously. That is
   a load-test, and it belongs with Phase 28.
-- **A narrower authorization has nowhere to escalate to yet.** Tasks now start
-  without `deployment:deploy` or `database:write`, and the broker correctly
-  refuses them — but there is no request-and-approve path, so such a step fails
-  the node instead of waiting for the user. That is Phase 11 and it is the next
-  thing built.
+- **The Control Center does not show pending actions yet.** `GET
+  /api/tasks/:id/actions` returns them and the answer endpoint works, but the
+  dashboard still renders only change requests. Until it does, a user on the web
+  UI sees fewer of the things their task is waiting on than the API knows about.
 - **`drainGraph` is still the inline path.** It is unchanged and still used by
   tests and by single-process deployments; the worker is the alternative, not
   yet the only way.
 
 ## Next exact action
 
-Phase 11/12 — runtime permission escalation. A task now starts with a narrower
-authorization than it used to, which makes the missing half visible: when it
-reaches `deployment:deploy` or `database:write` the broker refuses and the node
-fails, where it should raise a `UserActionRequest`, move the task to
-WAITING_FOR_PERMISSION, and resume on approval. Approval scopes are once / node
-/ task / project, defaulting to the narrowest. Nothing auto-grants.
+Render the pending-action list in the Control Center, then Phase 13 — running
+task changes. `submitUserCommand` already analyses a change and can require
+approval; what is missing is the instruction VERSION (historical records are
+never mutated), the impact analysis covering permissions and budget as well as
+requirements, and the replan that turns an approved change into new graph nodes
+rather than a restarted task.

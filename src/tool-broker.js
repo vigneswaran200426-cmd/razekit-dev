@@ -40,7 +40,9 @@ export class ToolBroker {
     const taskId = await this.getAgentTaskId(agentInstanceId);
     const tenantId = await tenantForTask(taskId);
     await enforceTenantLimit(tenantId, "toolCallsPerMinute", "tool.call");
-    const decision = await authorizeToolCall(agentInstanceId, toolKey, scopes);
+    // The node is passed so a node-scoped approval applies to the node it was
+    // granted for, and to no other.
+    const decision = await authorizeToolCall(agentInstanceId, toolKey, scopes, { nodeId });
     const baseAudit = {
       id: id("toolcall"),
       agentInstanceId,

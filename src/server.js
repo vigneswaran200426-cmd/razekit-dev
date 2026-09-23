@@ -30,6 +30,7 @@ import { configureModelRegistry } from "./model-providers.js";
 import { listModelSessions } from "./model-sessions.js";
 import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { listTools, requiredScopesForTools } from "./tool-registry.js";
+import { pendingUserActions, resolvePermissionAction } from "./user-actions.js";
 import {
   EXECUTION_LEVELS,
   authorizeFromPreview,
@@ -45,6 +46,7 @@ import {
 import {
   approvePermission,
   denyPermission,
+  APPROVAL_SCOPE,
   getAuthorizationPlan,
   getPermissions,
   listPendingRequests,
@@ -500,6 +502,41 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,result);
     }
 
+    // Everything this task is waiting on a person for. The point of the
+    // endpoint is that "why has this not moved" has an answer that is not
+    // "read the logs".
+    m=p.match(/^\/api\/tasks\/([^/]+)\/actions$/);
+    if(req.method==="GET"&&m){
+      await assertTaskAccess(m[1], principal);
+      return json(res,200,{actions:await pendingUserActions({taskId:m[1],tenantId:principal.tenantId})});
+    }
+
+    m=p.match(/^\/api\/tasks\/([^/]+)\/actions\/([^/]+)$/);
+    if(req.method==="POST"&&m){
+      await assertTaskAccess(m[1], principal);
+      const i=await body(req);
+      if(typeof i.approve!=="boolean"){
+        return json(res,400,{error:"approve must be true or false. Not answering is not an answer."});
+      }
+      const scope=i.scope||APPROVAL_SCOPE.ONCE;
+      if(!Object.values(APPROVAL_SCOPE).includes(scope)){
+        return json(res,400,{error:"Unknown approval scope: "+scope});
+      }
+      try{
+        const result=await resolvePermissionAction({
+          requestId:m[2],
+          approve:i.approve,
+          scope,
+          expiresAt:i.expiresAt||null,
+          reason:i.reason||null,
+          actedBy:principal.userId
+        });
+        return json(res,200,result);
+      }catch(error){
+        return json(res,404,{error:error.message});
+      }
+    }
+
     m=p.match(/^\/api\/tasks\/([^/]+)\/changes\/([^/]+)\/approve$/);
     if(req.method==="POST"&&m){
       await assertTaskAccess(m[1], principal);
@@ -889,7 +926,13 @@ const server = http.createServer(async (req,res) => {
     m=p.match(/^\/internal\/permissions\/([^/]+)\/approve$/);
     if(req.method==="POST"&&m){
       const i=await body(req);
-      return json(res,200,await approvePermission(m[1],i.expiresAt||null));
+      // Defaults to ONCE like every other path: an operator approving on a
+      // user's behalf should not grant more than the user would have.
+      return json(res,200,await approvePermission(m[1],{
+        scope:i.scope||APPROVAL_SCOPE.ONCE,
+        expiresAt:i.expiresAt||null,
+        approvedBy:"operator"
+      }));
     }
 
     m=p.match(/^\/internal\/permissions\/([^/]+)\/deny$/);
