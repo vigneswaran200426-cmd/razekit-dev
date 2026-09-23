@@ -1,6 +1,7 @@
 import { id, transact } from "./store.js";
 import { redactAuditValue, DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./tenant-security.js";
 import {
+  DEPENDENCY_MODE,
   GRAPH_STATUS,
   NODE_STATUS,
   applyReadiness,
@@ -113,6 +114,7 @@ export async function createTaskGraph({
     kind: node?.kind ?? "implementation",
     description: node?.description ?? "",
     dependsOn: [...(node?.dependsOn ?? [])],
+    dependsOnMode: node?.dependsOnMode ?? DEPENDENCY_MODE.SUCCEEDED,
     order: index,
     // A node's payload is whatever the executor for its kind needs. JEV does
     // not interpret it; scheduling must not depend on what the work is.
@@ -241,6 +243,7 @@ export async function expandGraph({ graphId, nodes, reason = "graph expanded", n
         kind: node.kind ?? "implementation",
         description: node.description ?? "",
         dependsOn: [...(node.dependsOn ?? [])],
+        dependsOnMode: node.dependsOnMode ?? DEPENDENCY_MODE.SUCCEEDED,
         order,
         payload: node.payload ?? null,
         resourceClass: node.resourceClass ?? "cpu",
@@ -255,7 +258,12 @@ export async function expandGraph({ graphId, nodes, reason = "graph expanded", n
     // Validate the union, not the addition. A new node whose dependency closes
     // a cycle through the existing graph is only visible from the whole.
     assertGraphShape([
-      ...existing.map(item => ({ key: item.key, dependsOn: item.dependsOn ?? [], order: item.order })),
+      ...existing.map(item => ({
+        key: item.key,
+        dependsOn: item.dependsOn ?? [],
+        dependsOnMode: item.dependsOnMode ?? DEPENDENCY_MODE.SUCCEEDED,
+        order: item.order
+      })),
       ...prepared
     ]);
 

@@ -1,6 +1,7 @@
 import { loadDb } from "./store.js";
 import { getAgent } from "./agent-manager.js";
 import { createTaskGraph, expandGraph, graphForTask } from "./jev.js";
+import { DEPENDENCY_MODE } from "./jev-domain.js";
 import { tenantForTask } from "./tenant-security.js";
 import { profileForAgent } from "./jev-profiles.js";
 import { graphFromExecutionPlan } from "./jev-planner.js";
@@ -146,6 +147,15 @@ export async function expandWithExecutionPlan({
     key: reviewKey,
     dependsOn: terminal
   });
+  // A review must see a FAILED execution, not be skipped by it. Under the
+  // normal rule a failed build would skip its own review, and the task would
+  // stop with nobody having decided what to do about the failure — which is
+  // exactly how a build failure used to be sent back to Fable.
+  review.dependsOnMode = DEPENDENCY_MODE.SETTLED;
+  // Every verdict owes the graph another node: a repair, or the verification
+  // that interprets the evidence. Until that node exists the graph is not
+  // finished, even when every node in it has settled.
+  review.payload.expandsGraph = true;
 
   const result = await expandGraph({
     graphId,
@@ -176,6 +186,47 @@ export async function expandWithRepair({ graphId, reviewKey, cycle, now = new Da
     reason: "review requested a revision (cycle " + cycle + ")",
     now
   });
+}
+
+/**
+ * Append the verification node for a review that passed.
+ *
+ * MODEL_VERIFY is deliberately NOT the thing that decides whether the task is
+ * done. The objective verifier has already run by the time this node exists,
+ * and its record is carried in the node's payload as `evidence`. The model's
+ * job here is interpretation — which requirement each check covers, what a
+ * failure actually means — and its interpretation cannot promote a failing
+ * verification to a passing one. Section: model interpretation is not evidence.
+ */
+export async function expandWithVerify({ graphId, reviewKey, cycle, evidence, now = new Date() }) {
+  const verify = modelNode(MODEL_NODE_KINDS.MODEL_VERIFY, {
+    key: "model-verify-" + cycle,
+    dependsOn: [reviewKey]
+  });
+
+  // The evidence travels with the node, so a worker that claims it after a
+  // restart interprets the same record rather than re-deriving one.
+  verify.payload.evidence = evidence ?? null;
+
+  return expandGraph({
+    graphId,
+    nodes: [verify],
+    reason: "verification evidence ready for interpretation (cycle " + cycle + ")",
+    now
+  });
+}
+
+/**
+ * How many repair cycles a task is allowed before it stops asking the models.
+ *
+ * A review that keeps returning REVISE is not a bug to be retried away: it is
+ * either a task the models cannot complete or a review that disagrees with the
+ * implementation on something neither will concede. Either way the money is
+ * real and each cycle costs a plan, an implementation and a review, so the
+ * cycle count is bounded and the task ends in NEEDS_REVIEW rather than looping.
+ */
+export function maxRepairCycles() {
+  return Math.max(0, Math.trunc(readNumberEnv("RAZEKIT_MAX_REPAIR_CYCLES", 3)));
 }
 
 /**
@@ -218,14 +269,55 @@ export async function nextModelGraphAction({ taskId, tenantId }) {
     if (!review || review.status !== "succeeded") continue;
 
     const decision = review.output?.structured?.review?.decision;
+
     if (decision === REVIEW_OUTCOMES.REVISE && !byKey.has("fable-repair-" + cycle)) {
+      // The limit is checked HERE rather than when the repair is appended,
+      // because appending it is what spends the money. A task at the ceiling
+      // stops with the findings intact for a person to read.
+      if (cycle >= maxRepairCycles()) {
+        return {
+          action: "repair-limit",
+          cycle,
+          reviewKey,
+          limit: maxRepairCycles(),
+          findings: review.output?.structured?.review?.findings ?? [],
+          reason: review.output?.structured?.review?.reason || "",
+          graphId: view.graph.id
+        };
+      }
       return { action: "expand-repair", cycle, reviewKey, graphId: view.graph.id };
     }
+
     if (decision === REVIEW_OUTCOMES.PASS) {
-      return { action: "verify", cycle, graphId: view.graph.id };
+      const verify = byKey.get("model-verify-" + cycle);
+      // No verification node yet: the objective verifier has to run and its
+      // record has to exist before a node can be created to interpret it.
+      if (!verify) {
+        return { action: "expand-verify", cycle, reviewKey, graphId: view.graph.id };
+      }
+      if (verify.status === "succeeded") {
+        return {
+          action: "verified",
+          cycle,
+          verifyNode: verify,
+          evidence: verify.payload?.evidence ?? null,
+          interpretation: verify.output?.structured?.review ?? null,
+          graphId: view.graph.id
+        };
+      }
+      // Created but not finished — the worker claims it on the next pass.
+      return { action: "none", cycle, graphId: view.graph.id };
     }
+
     if (decision === REVIEW_OUTCOMES.BLOCK) {
-      return { action: "block", cycle, reason: review.output.structured.review.reason, graphId: view.graph.id };
+      return {
+        action: "block",
+        cycle,
+        reason: review.output.structured.review.blockedOn ||
+          review.output.structured.review.reason ||
+          "This task needs a decision from you before it can continue.",
+        graphId: view.graph.id
+      };
     }
     break;
   }

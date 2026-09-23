@@ -1,4 +1,5 @@
 import { reserveSpend, captureSpend, releaseSpend } from "./billing.js";
+import { checkBudget, charge } from "./budget-manager.js";
 
 // Per-node budget, on the billing primitives that already exist.
 //
@@ -51,7 +52,25 @@ export function majorToMinor(major) {
  */
 export async function reserveNodeBudget({ node, agentInstanceId }) {
   const minor = Math.max(0, Math.trunc(Number(node.budgetMinor) || 0));
-  if (minor === 0) return { reserved: true, reservation: null, amountMinor: 0 };
+
+  if (minor === 0) {
+    // Nothing to hold, but "nothing to hold" is not "free to run". A node
+    // priced at zero — which is every node until an operator configures a cost
+    // — would otherwise reach a paid provider with the agent's budget already
+    // exhausted, because a zero reservation can never be refused. The headroom
+    // check is what stops that, and it is the same ledger everything else uses.
+    const headroom = await checkBudget(agentInstanceId, 0);
+    if (headroom.remaining <= 0) {
+      return {
+        reserved: false,
+        reservation: null,
+        amountMinor: 0,
+        reason: "Hard budget limit exceeded",
+        limit: "agent-budget"
+      };
+    }
+    return { reserved: true, reservation: null, amountMinor: 0 };
+  }
 
   const idempotencyKey = "jev:" + node.id + ":attempt:" + Number(node.attempt || 1);
 
@@ -98,6 +117,70 @@ export async function captureNodeBudget({ reservation, actualMinor }) {
   // work that already succeeded.
   const capped = Math.min(requested, Number(reservation.amount || 0));
   return captureSpend(reservation.id, { actualAmount: capped });
+}
+
+/**
+ * Settle a node against what it actually cost.
+ *
+ * captureNodeBudget alone is not enough for work whose real price is only known
+ * afterwards — a model call. Capping the capture at the reservation, which is
+ * all captureSpend can do, means a node priced at zero settles at zero however
+ * much the provider actually charged: the ledger never sees the money and the
+ * hard budget can never bind. That is not a smaller number, it is a missing
+ * one.
+ *
+ * So the reservation is captured up to its ceiling and anything above it is
+ * recorded as a direct charge. Recording an overrun after the fact is not as
+ * good as reserving for it beforehand, and it is not meant to be: it is what
+ * remains honest when the estimate was lower than the truth. The next node's
+ * reservation then refuses, which is how the overrun stops the task instead of
+ * compounding.
+ *
+ * `unrecordedMinor` is the part that could not be recorded because doing so
+ * would itself breach the hard limit. It is returned rather than swallowed, so
+ * the caller can surface a real discrepancy instead of the system quietly
+ * believing it spent less than it did.
+ */
+export async function settleNodeSpend({ reservation, agentInstanceId, measuredMinor, reason = "model node" }) {
+  const measured = measuredMinor === undefined || measuredMinor === null
+    ? null
+    : Math.max(0, Math.trunc(Number(measuredMinor) || 0));
+
+  const reservedMinor = reservation ? majorToMinor(reservation.amount) : 0;
+  let capturedMinor = 0;
+
+  if (reservation) {
+    capturedMinor = measured === null ? reservedMinor : Math.min(measured, reservedMinor);
+    await captureSpend(reservation.id, { actualAmount: minorToMajor(capturedMinor) });
+  }
+
+  const overrunMinor = measured === null ? 0 : Math.max(0, measured - reservedMinor);
+  let unrecordedMinor = 0;
+
+  if (overrunMinor > 0) {
+    // Record as much of the overrun as the hard limit can hold, then report the
+    // rest. Recording none of it because some of it does not fit would leave
+    // the ledger further from the truth, not closer, and would leave headroom
+    // that does not exist for the next node to reserve against.
+    const headroom = await checkBudget(agentInstanceId, 0);
+    const affordableMinor = Math.min(overrunMinor, Math.max(0, majorToMinor(headroom.remaining)));
+
+    if (affordableMinor > 0) {
+      try {
+        await charge(agentInstanceId, minorToMajor(affordableMinor), reason + " (above reservation)");
+        capturedMinor += affordableMinor;
+      } catch (error) {
+        // The tenant's hourly ceiling can still refuse what the agent's own
+        // budget would allow. The money is gone at the provider either way.
+        unrecordedMinor = overrunMinor;
+        return { capturedMinor, reservedMinor, overrunMinor, unrecordedMinor };
+      }
+    }
+
+    unrecordedMinor = overrunMinor - affordableMinor;
+  }
+
+  return { capturedMinor, reservedMinor, overrunMinor, unrecordedMinor };
 }
 
 /**

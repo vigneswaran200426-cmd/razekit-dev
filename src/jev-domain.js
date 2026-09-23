@@ -48,6 +48,21 @@ export const DOOMED_STATUSES = new Set([
   NODE_STATUS.TIMED_OUT
 ]);
 
+// How a node treats the dependencies it lists.
+//
+// SUCCEEDED is the normal rule and the safe default: work that depends on work
+// that failed must not run.
+//
+// SETTLED exists for the one case where that rule is wrong — a node whose job
+// is to look at what happened. A review that only ran on success would never
+// see a failure, and the loop would have no way to send a failing build back
+// for repair; it would simply stop. Such a node still cannot outlive a
+// cancellation, so CANCELLED and SKIPPED dependencies doom it as before.
+export const DEPENDENCY_MODE = {
+  SUCCEEDED: "succeeded",
+  SETTLED: "settled"
+};
+
 export const GRAPH_STATUS = {
   PENDING: "pending",
   RUNNING: "running",
@@ -88,6 +103,11 @@ export function assertGraphShape(nodes) {
     const deps = node.dependsOn ?? [];
     if (!Array.isArray(deps)) {
       throw new Error("dependsOn must be an array on node: " + node.key);
+    }
+    if (node.dependsOnMode !== undefined &&
+        node.dependsOnMode !== null &&
+        !Object.values(DEPENDENCY_MODE).includes(node.dependsOnMode)) {
+      throw new Error("Unknown dependsOnMode on node " + node.key + ": " + node.dependsOnMode);
     }
     const seen = new Set();
     for (const dep of deps) {
@@ -224,7 +244,13 @@ export function applyReadiness(nodes) {
       if (node.status !== NODE_STATUS.PENDING && node.status !== NODE_STATUS.READY) continue;
 
       const deps = (node.dependsOn ?? []).map(key => byKey.get(key));
-      const doomed = deps.find(dep => DOOMED_STATUSES.has(dep.status));
+      const settles = node.dependsOnMode === DEPENDENCY_MODE.SETTLED;
+
+      // A settled-mode node is doomed only by a graph that is being torn down,
+      // not by work that failed — seeing the failure is its purpose.
+      const doomed = settles
+        ? deps.find(dep => dep.status === NODE_STATUS.CANCELLED || dep.status === NODE_STATUS.SKIPPED)
+        : deps.find(dep => DOOMED_STATUSES.has(dep.status));
 
       if (doomed) {
         const from = node.status;
@@ -235,7 +261,9 @@ export function applyReadiness(nodes) {
         continue;
       }
 
-      const satisfied = deps.every(dep => dep.status === NODE_STATUS.SUCCEEDED);
+      const satisfied = settles
+        ? deps.every(dep => TERMINAL_STATUSES.has(dep.status))
+        : deps.every(dep => dep.status === NODE_STATUS.SUCCEEDED);
       if (satisfied && node.status === NODE_STATUS.PENDING) {
         node.status = NODE_STATUS.READY;
         changed.push({ key: node.key, from: NODE_STATUS.PENDING, to: node.status });
@@ -259,7 +287,16 @@ export function claimableNodes(nodes, { resourceClass = null } = {}) {
   const byKey = new Map(nodes.map(node => [node.key, node]));
   return nodes
     .filter(node => node.status === NODE_STATUS.READY)
-    .filter(node => (node.dependsOn ?? []).every(key => byKey.get(key)?.status === NODE_STATUS.SUCCEEDED))
+    // Re-checked here rather than trusted from the stored status, because READY
+    // is a cached derivation and a claim must not depend on a cache. The rule
+    // is the node's own dependency mode — see DEPENDENCY_MODE.
+    .filter(node => {
+      const deps = (node.dependsOn ?? []).map(key => byKey.get(key));
+      return node.dependsOnMode === DEPENDENCY_MODE.SETTLED
+        ? deps.every(dep => dep && TERMINAL_STATUSES.has(dep.status) &&
+            dep.status !== NODE_STATUS.CANCELLED && dep.status !== NODE_STATUS.SKIPPED)
+        : deps.every(dep => dep?.status === NODE_STATUS.SUCCEEDED);
+    })
     .filter(node => (resourceClass ? (node.resourceClass || "cpu") === resourceClass : true))
     .sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }

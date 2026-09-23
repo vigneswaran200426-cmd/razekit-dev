@@ -246,7 +246,7 @@ test("model phases execute as real JEV nodes, reserving before every provider ca
   // No second ledger — these are billing.js's own entries.
   assert.equal(db.billingLedger.filter(e => e.agentInstanceId === agent.id).length, 3);
 
-  assert.equal(action.action, "verify", "a passing review asks for verification");
+  assert.equal(action.action, "expand-verify", "a passing review asks for the verification node to be created");
   assert.equal(task.id, agent.taskId);
 });
 
@@ -262,7 +262,7 @@ test("a revise verdict appends a repair cycle, and history is preserved", async 
   assert.ok(keys.includes("fable-repair-1"), "a repair node was created and ran");
   assert.ok(keys.includes("exec2:write-index"), "the repair produced a second execution cycle");
   assert.ok(keys.includes("astra-review-2"), "and the repair was reviewed");
-  assert.equal(action.action, "verify");
+  assert.equal(action.action, "expand-verify");
 
   const db = await loadDb();
   const nodes = db.graphNodes.filter(n => n.graphId === graph.id);

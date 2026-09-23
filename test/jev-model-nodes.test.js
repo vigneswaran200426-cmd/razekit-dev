@@ -469,7 +469,7 @@ test("a passing review asks for verification instead of repair", async () => {
   });
 
   const action = await nextModelGraphAction({ taskId: agent.taskId, tenantId });
-  assert.equal(action.action, "verify");
+  assert.equal(action.action, "expand-verify");
 });
 
 // ── Profiles ─────────────────────────────────────────────────────────────────

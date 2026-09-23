@@ -1,7 +1,7 @@
 import { transact } from "./store.js";
 import { callModel, ModelRuntimeError } from "./model-runtime.js";
 import { listModelSessions, provisionModelSessions, updateModelSession, appendModelMessage, recordModelUsage } from "./model-sessions.js";
-import { reserveNodeBudget, captureNodeBudget, releaseNodeBudget } from "./jev-budget.js";
+import { reserveNodeBudget, releaseNodeBudget, settleNodeSpend } from "./jev-budget.js";
 import { writeBlackboard } from "./blackboard.js";
 import {
   MODEL_NODE_KINDS,
@@ -165,15 +165,24 @@ export async function executeModelNode({
   //              quietly overspends its real ceiling.
   const measured = usageCostMinor(response?.usage);
   let settledMinor = 0;
+  let unrecordedMinor = 0;
   try {
     if (failure?.outcomeUnknown) {
-      settledMinor = hold.amountMinor;
-      await captureNodeBudget({ reservation: hold.reservation, actualMinor: hold.amountMinor });
+      // Settle at the reservation, not at a measurement we never received.
+      const settled = await settleNodeSpend({
+        reservation: hold.reservation, agentInstanceId: agent.id,
+        measuredMinor: hold.amountMinor, reason: "model node " + node.key
+      });
+      settledMinor = settled.capturedMinor;
     } else if (failure) {
       await releaseNodeBudget({ reservation: hold.reservation });
     } else {
-      settledMinor = measured === null ? hold.amountMinor : Math.min(measured, hold.amountMinor);
-      await captureNodeBudget({ reservation: hold.reservation, actualMinor: settledMinor });
+      const settled = await settleNodeSpend({
+        reservation: hold.reservation, agentInstanceId: agent.id,
+        measuredMinor: measured, reason: "model node " + node.key
+      });
+      settledMinor = settled.capturedMinor;
+      unrecordedMinor = settled.unrecordedMinor;
     }
   } catch (settlementError) {
     // Settlement must never mask the outcome of the call. The reservation is
@@ -201,6 +210,19 @@ export async function executeModelNode({
     throw failure;
   }
 
+  if (unrecordedMinor > 0) {
+    // The provider charged more than this task's budget can account for. The
+    // node itself succeeded — the answer is real and is kept, because throwing
+    // it away would mean paying again for the same work — but the task must
+    // stop here rather than start another paid call it cannot afford.
+    await writeBlackboard(
+      agent.id,
+      profile.keys.lastResult + ".unrecordedSpend",
+      { nodeKey: node.key, unrecordedMinor, at: new Date().toISOString() },
+      "jev-model-executor"
+    );
+  }
+
   await recordModelUsage(session.id, response.usage || {});
   if (response.output || response.text) {
     await appendModelMessage(session.id, "assistant", String(response.output || response.text), {
@@ -221,6 +243,8 @@ export async function executeModelNode({
       usage: response.usage, costMinor: settledMinor, reservedMinor: hold.amountMinor,
       latencyMs: response.latencyMs ?? null
     }),
+    // Read by the loop: the work is kept, the task stops.
+    budgetOverrun: unrecordedMinor > 0 ? { unrecordedMinor, nodeKey: node.key } : null,
     // jev-executor reads this to settle; it is already settled here, so the
     // measured value is reported to keep the two consistent rather than letting
     // the generic path capture a second time.
@@ -306,6 +330,10 @@ export async function compileModelContext({ agent, task, node, graphNodes, black
     },
     agent: { id: agent.id, type: agent.agentType },
     node: { key: node.key, kind: node.kind, attempt: node.attempt },
+    // Objective verification evidence, when this node has any. A verify node
+    // interprets a record that already exists; it does not produce one, and it
+    // cannot reach past this into the verifier.
+    evidence: node.payload?.evidence ?? null,
     upstream,
     // The blackboard is passed for the adapters that read it directly. It is
     // the projection the orchestrator already built, not raw model transcripts.

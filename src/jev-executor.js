@@ -433,6 +433,105 @@ export async function drainGraph({
 }
 
 /**
+ * Record one execution cycle of a model graph as an execution run.
+ *
+ * `run.result.plan.steps` is a CONTRACT — the verifier reads it to decide
+ * whether the work is real, the dashboard reads it for deliverables, and the
+ * reviewer reads the blackboard summary derived from it. drainGraph has always
+ * produced it; a loop that runs nodes one at a time has to produce it too, or
+ * moving the model phases onto the graph would quietly blind verification.
+ *
+ * Scoped to ONE cycle rather than the whole graph, and that scoping is the
+ * point: the review for cycle N must see whether cycle N's steps passed. The
+ * graph as a whole is still RUNNING at that moment — the review node itself is
+ * pending — so a whole-graph status would report "incomplete" forever and every
+ * review would revise.
+ */
+export async function syncExecutionCycleRun({ agentInstanceId, cycle, tenantId = null, taskId = null }) {
+  const agent = await getAgent(agentInstanceId);
+  if (!agent) throw new Error("Agent instance not found");
+  const profile = profileForAgent(agent);
+  const view = await graphForTask({
+    taskId: taskId || agent.taskId,
+    tenantId: tenantId || await tenantForTask(agent.taskId),
+    includeFinished: true
+  });
+  if (!view) return null;
+
+  const prefix = "exec" + cycle + ":";
+  const nodes = view.nodes.filter(node => node.key.startsWith(prefix));
+  if (nodes.length === 0) return null;
+
+  const failed = nodes.find(node =>
+    node.status === NODE_STATUS.FAILED || node.status === NODE_STATUS.TIMED_OUT
+  );
+  const status =
+    failed ? "failed" :
+    nodes.every(node => node.status === NODE_STATUS.SUCCEEDED) ? "completed" :
+    nodes.some(node => node.status === NODE_STATUS.CANCELLED) ? "cancelled" :
+    "incomplete";
+
+  const runId = "jevrun_" + view.graph.id + "_c" + cycle;
+  const error = failed ? (failed.error?.message || failed.lastError || "Node failed: " + failed.key) : null;
+  const artifacts = nodes
+    .filter(n => profile.packageKinds.includes(n.kind) && n.status === NODE_STATUS.SUCCEEDED && n.output)
+    .map(n => n.output);
+
+  await transact(db => {
+    let run = db.executionRuns.find(item => item.id === runId);
+    if (!run) {
+      run = {
+        id: runId,
+        taskId: agent.taskId,
+        agentInstanceId,
+        kind: profile.runKind,
+        planId: view.graph.planId ?? null,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        result: null,
+        error: null
+      };
+      db.executionRuns.push(run);
+    }
+    run.status = status;
+    run.completedAt = status === "incomplete" ? null : new Date().toISOString();
+    run.planId = view.graph.planId ?? null;
+    run.result = {
+      cycle,
+      executed: nodes.map(node => ({ key: node.key, status: node.status })),
+      steps: nodes.length,
+      summary: view.summary ?? null,
+      plan: {
+        id: view.graph.planId ?? null,
+        steps: nodes.map(nodeAsStep)
+      }
+    };
+    run.error = error;
+    run.artifacts = artifacts;
+  });
+
+  await writeBlackboard(
+    agentInstanceId,
+    profile.keys.lastResult,
+    {
+      runId,
+      cycle,
+      status,
+      planId: view.graph.planId ?? null,
+      graphId: view.graph.id,
+      engine: nodes.find(n => n.payload?.engine)?.payload?.engine ?? null,
+      artifacts,
+      completedAt: new Date().toISOString(),
+      error
+    },
+    "jev-executor"
+  );
+
+  return { runId, status, cycle, steps: nodes.length, error };
+}
+
+/**
  * Run a claimed model node and settle it through the ordinary JEV lifecycle.
  *
  * The node is already claimed and leased by the caller. This adds nothing to
@@ -538,7 +637,10 @@ async function executeModelNodeThroughGraph({ node, agent, profile, modelRegistr
     status: done.accepted ? "succeeded" : "lease_lost",
     unblocked: done.unblocked,
     output,
-    modelResult: output
+    modelResult: output,
+    // The node succeeded but the provider charged more than the task could
+    // account for. Reported alongside the success rather than instead of it.
+    budgetOverrun: output.budgetOverrun ?? null
   };
 }
 
