@@ -137,6 +137,11 @@ export async function executeNextNode({
   tenantId = null,
   workerId = "inline-worker",
   leaseMs = DEFAULT_LEASE_MS,
+  // Called with the claimed node before any work starts, and given a chance to
+  // clean up afterwards. A worker whose node outlives its lease is swept and
+  // its work is run twice, so a long-running node needs something holding the
+  // lease open while it runs — and only the caller knows how long that is.
+  onClaim = null,
   now = new Date()
 }) {
   const agent = await getAgent(agentInstanceId);
@@ -154,6 +159,15 @@ export async function executeNextNode({
 
   const { node } = claim;
 
+  // Whatever the caller returns here is released once the node settles, however
+  // it settles — a renewal timer left running would keep a dead node's lease
+  // alive and stop the sweeper recovering it.
+  const release = onClaim ? await onClaim(node) : null;
+  const finish = async result => {
+    if (typeof release === "function") await release();
+    return result;
+  };
+
   // ── A model node settles its own budget ───────────────────────────────────
   //
   // Reserve-before-call has to happen around the provider request itself, not
@@ -161,9 +175,9 @@ export async function executeNextNode({
   // returns through the same success/failure path as everything else, which is
   // why there is still exactly one settlement per node.
   if (isModelNodeKind(node.kind)) {
-    return executeModelNodeThroughGraph({
+    return finish(await executeModelNodeThroughGraph({
       node, agent, profile, modelRegistry, now, agentInstanceId
-    });
+    }));
   }
 
   // ── Budget, before any work ───────────────────────────────────────────────
@@ -184,13 +198,13 @@ export async function executeNextNode({
       { nodeKey: node.key, limit: hold.limit, reason: hold.reason },
       "jev-executor"
     );
-    return {
+    return finish({
       node: result.node,
       status: "budget_refused",
       limit: hold.limit,
       reason: hold.reason,
       skipped: result.skipped
-    };
+    });
   }
 
   // ── Work ──────────────────────────────────────────────────────────────────
@@ -277,12 +291,13 @@ export async function executeNextNode({
       { type: "node_failed", nodeKey: node.key, attempt: node.attempt, error: failure.message },
       "jev-executor"
     );
-    return {
+    await recordCycleForNode({ agentInstanceId, node, tenantId, taskId });
+    return finish({
       node: result.node,
       status: result.willRetry ? "retry_scheduled" : "failed",
       error: failure.message,
       skipped: result.skipped
-    };
+    });
   }
 
   const done = await completeNode({ nodeId: node.id, leaseId: node.leaseId, output, now });
@@ -293,12 +308,14 @@ export async function executeNextNode({
     "jev-executor"
   );
 
-  return {
+  await recordCycleForNode({ agentInstanceId, node, tenantId, taskId });
+
+  return finish({
     node: done.node,
     status: done.accepted ? "succeeded" : "lease_lost",
     unblocked: done.unblocked,
     output
-  };
+  });
 }
 
 /**
@@ -430,6 +447,29 @@ export async function drainGraph({
   );
 
   return { runId, status, executed, steps, summary: view?.summary ?? null, graph: view?.graph ?? null };
+}
+
+/**
+ * Update the cycle run record for a node that has just settled, if it belongs
+ * to a cycle.
+ *
+ * Called here, at the point of settlement, rather than by the loop — because
+ * once workers run the nodes the loop is not there when they settle, and the
+ * review and the verifier both read this record. Recording it in the caller
+ * meant it was only written when the caller happened to be the executor.
+ */
+async function recordCycleForNode({ agentInstanceId, node, tenantId, taskId }) {
+  const match = /^exec(\d+):/.exec(node.key || "");
+  if (!match) return null;
+  try {
+    return await syncExecutionCycleRun({
+      agentInstanceId, cycle: Number(match[1]), tenantId, taskId
+    });
+  } catch {
+    // The node's own outcome is already durable; a failed projection must not
+    // turn a settled node into an error.
+    return null;
+  }
 }
 
 /**

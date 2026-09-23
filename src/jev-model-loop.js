@@ -3,7 +3,7 @@ import { getAgent } from "./agent-manager.js";
 import { profileForAgent } from "./jev-profiles.js";
 import { tenantForTask } from "./tenant-security.js";
 import { graphForTask } from "./jev.js";
-import { executeNextNode, syncExecutionCycleRun } from "./jev-executor.js";
+import { executeNextNode } from "./jev-executor.js";
 import { writeBlackboard } from "./blackboard.js";
 import { verifyTask } from "./verification.js";
 import { ORCHESTRATION_STATUS } from "./orchestrator-domain.js";
@@ -36,6 +36,17 @@ import {
 // through jev-budget. Tool authorization is the broker. Verification is
 // verification.js, and its verdict is objective — the model verify node
 // interprets that record and cannot overturn it.
+
+/**
+ * Whether the loop runs nodes itself.
+ *
+ * Defaults to true, which is the honest default for a deployment that has not
+ * started a worker: turning it off without one would leave every graph waiting
+ * for a claimant that does not exist.
+ */
+export function inlineExecutionEnabled() {
+  return String(process.env.RAZEKIT_JEV_INLINE_EXECUTION ?? "true").toLowerCase() !== "false";
+}
 
 export const MODEL_LOOP_OUTCOME = {
   CREATED: "created",
@@ -111,6 +122,12 @@ export async function advanceModelGraph(agentInstanceId, {
   workspaceRoot,
   adapters = {},
   workerId = null,
+  // Whether this call also RUNS a node, or only decides what the graph should
+  // become. A single-process deployment runs them here; a deployment with
+  // workers leaves the running to them and this becomes purely a coordinator.
+  // Both read the same graph and reach the same decisions, which is why the
+  // switch is safe: it changes who claims, not what is claimable.
+  executeNodes = inlineExecutionEnabled(),
   now = new Date()
 } = {}) {
   const agent = await getAgent(agentInstanceId);
@@ -142,20 +159,31 @@ export async function advanceModelGraph(agentInstanceId, {
     };
   }
 
-  // One node.
-  const result = await executeNextNode({
-    agentInstanceId,
-    workspaceRoot,
-    adapters,
-    modelRegistry,
-    taskId: agent.taskId,
-    tenantId,
-    workerId: workerId || "loop:" + agentInstanceId,
-    now
-  });
+  // One node — unless workers are doing that.
+  if (executeNodes) {
+    const result = await executeNextNode({
+      agentInstanceId,
+      workspaceRoot,
+      adapters,
+      modelRegistry,
+      taskId: agent.taskId,
+      tenantId,
+      workerId: workerId || "loop:" + agentInstanceId,
+      now
+    });
 
-  if (result) {
-    return settleNodeResult({ agentInstanceId, profile, result, graphId: view.graph.id });
+    if (result) {
+      return settleNodeResult({ agentInstanceId, profile, result, graphId: view.graph.id });
+    }
+  } else if (view.nodes.some(node => ["ready", "running"].includes(node.status))) {
+    // A worker has it, or is about to. Expanding now would be deciding what
+    // comes after work that has not finished.
+    return {
+      outcome: MODEL_LOOP_OUTCOME.IDLE,
+      reason: "Nodes are claimable or running; a worker is executing them",
+      graphId: view.graph.id,
+      graphStatus: view.graph.status
+    };
   }
 
   // Nothing claimable: what should the graph become?
@@ -280,15 +308,6 @@ async function settleNodeResult({ agentInstanceId, profile, result, graphId }) {
   }
 
   const succeeded = result.status === "succeeded";
-
-  // An execution node changes what the cycle's run record says, and the review
-  // that follows reads that record. Recording it here — not at the end of a
-  // drain that no longer exists — is what keeps verification and review looking
-  // at real evidence.
-  const cycleMatch = /^exec(\d+):/.exec(node.key);
-  if (cycleMatch) {
-    await syncExecutionCycleRun({ agentInstanceId, cycle: Number(cycleMatch[1]) });
-  }
 
   await syncRun(agentInstanceId, {
     status: succeeded

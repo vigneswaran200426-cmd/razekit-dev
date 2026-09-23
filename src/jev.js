@@ -1,4 +1,4 @@
-import { id, transact } from "./store.js";
+import { id, loadDb, transact } from "./store.js";
 import { redactAuditValue, DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./tenant-security.js";
 import {
   DEPENDENCY_MODE,
@@ -486,6 +486,39 @@ export async function failNode({ nodeId, leaseId, error, retryable = false, now 
 }
 
 // ── Recovery ─────────────────────────────────────────────────────────────────
+
+/**
+ * Which graphs currently have work a worker could claim.
+ *
+ * A read, not a claim: it narrows the candidates so a worker does not have to
+ * attempt every graph in the system, and nothing about it is authoritative. Two
+ * workers reading the same candidate is expected — the claim decides, inside a
+ * single transaction, and the loser is told there was nothing to do.
+ *
+ * Ordered oldest-graph-first so a long-running task is not starved by newer
+ * ones that keep arriving.
+ */
+export async function claimableGraphWork({ resourceClass = null, tenantId = null, limit = 20 } = {}) {
+  const db = await loadDb();
+  const graphs = db.taskGraphs
+    .filter(graph => graphIsActive(graph) && (tenantId ? graph.tenantId === tenantId : true))
+    .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0));
+
+  const candidates = [];
+  for (const graph of graphs) {
+    const nodes = nodesOfGraph(db, graph.id);
+    if (claimableNodes(nodes, { resourceClass }).length === 0) continue;
+    candidates.push({
+      graphId: graph.id,
+      taskId: graph.taskId,
+      tenantId: graph.tenantId,
+      agentInstanceId: graph.agentInstanceId,
+      createdAt: graph.createdAt
+    });
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+}
 
 /**
  * Put a settled node back in the queue for another attempt.

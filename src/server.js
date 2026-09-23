@@ -913,10 +913,16 @@ const server = http.createServer(async (req,res) => {
       return json(res,200,await modelOrchestrator.provision(m[1]));
     }
 
+    // /model/step is deliberately gone. It ran a model phase outside the graph:
+    // no node, no lease, no reservation, and spend recorded after the provider
+    // had already been paid. Everything it did now happens as a graph node, so
+    // the way to advance a task is to advance the task.
     m=p.match(/^\/internal\/agents\/([^/]+)\/model\/step$/);
     if(req.method==="POST"&&m){
-      const i=await body(req);
-      return json(res,200,await modelOrchestrator.step(m[1],i));
+      return json(res,410,{
+        error:"Model phases run as graph nodes. Advance the task instead.",
+        use:"/internal/agents/"+m[1]+"/advance"
+      });
     }
 
     m=p.match(/^\/internal\/agents\/([^/]+)\/model\/state$/);

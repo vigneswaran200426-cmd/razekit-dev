@@ -21,8 +21,9 @@ Completion states are used literally:
 
 ## Current phase
 
-**Phase 6 — worker-process execution.** `drainGraph` and the loop still run
-nodes inline in the API process.
+**Phase 7 — task creation lifecycle.** Requirements → authorization prediction →
+permission prediction → resource prediction → execution level → budget preview →
+confirmation → funded task. Not started.
 
 ## Completed
 
@@ -39,10 +40,11 @@ nodes inline in the API process.
 | 7 | Model cost estimation (min/expected/max/confidence) | IMPLEMENTED | `jev-model-domain.js`; confidence is deliberately 0.35 with no provider pricing configured |
 | 4 | **Provider UNKNOWN outcome and reconciliation** | VERIFIED | `test/model-reconciliation.test.js`: durable record, no retry, provider lookup when the adapter supports one and an honest "unsupported" when it does not, resolve-and-resume through `reopenNode` |
 | 5 | **Bounded model context** | VERIFIED | `test/model-context.test.js`: core survives every level of compaction, transcripts never forwarded, over-budget reported rather than trimmed |
+| 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
 ## In progress
 
-Nothing. Phase 6 has not started.
+Nothing.
 
 ## Not started
 
@@ -72,8 +74,8 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 251 tests — 220 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
-| Real Neon | 27 pass, 0 fail at `bf27972`; run with `RAZEKIT_DATABASE_URL` set |
+| Local (`npm test`) | 257 tests — 226 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Real Neon | 27 pass, 0 fail; run with `RAZEKIT_DATABASE_URL` set |
 
 ## Known defects and weaknesses
 
@@ -99,14 +101,20 @@ phase by phase.
   a reversal would be for is recorded (`reversalOwedMinor`). Reversing it is a
   finance action with its own authority; inventing one here would be the fake
   refund this codebase refuses to write elsewhere.
-- **`drainGraph` still runs inline.** Worker-process execution (Phase 25) has
-  not started.
+- **The worker loop is proven in one process.** Its claim/lease/recovery
+  primitives are proven cross-process against Neon, but the worker LOOP itself
+  has not been run as several OS processes against Neon simultaneously. That is
+  a load-test, and it belongs with Phase 28.
+- **`drainGraph` is still the inline path.** It is unchanged and still used by
+  tests and by single-process deployments; the worker is the alternative, not
+  yet the only way.
 
 ## Next exact action
 
-Phase 6 — worker-process execution. `drainGraph` and `advanceModelGraph` both
-run nodes inline in whatever process calls them. Add a worker entry point that
-claims from the graph, renews its lease while it works, and settles — so a
-worker's death is recovered by lease expiry rather than by the API process
-having survived. The claim/lease/recovery primitives already exist and are
-proven against Neon; what is missing is a process that uses them.
+Phase 7/8 — the task lifecycle before execution. Today a task arrives already
+authorized: `task.authorization` is set by whoever created it and the loop
+trusts it. What is missing is everything in front of that — predicted
+requirements, predicted tools and permissions, an execution level (LOW / MID /
+HIGH / CUSTOM), a budget estimate the user sees before agreeing to it, and the
+confirmation that turns a prediction into an authorization. Prediction is not
+authorization and must not become it.

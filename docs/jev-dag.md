@@ -235,6 +235,77 @@ result and so never passed a game task.
 the same "No game engine adapter is configured" it has always failed with.
 Moving onto JEV does not invent engine support that was never there.
 
+## Dependency modes
+
+A node normally runs only when everything it depends on has SUCCEEDED, and a
+failed dependency SKIPS it. That is the right rule for work, and the wrong rule
+for a node whose job is to look at what happened.
+
+`dependsOnMode: "settled"` says: run when the dependencies have finished,
+however they finished. It exists for reviews. Under the normal rule a failed
+build skipped its own review, so nobody decided what to do about the failure and
+the task simply stopped — the opposite of the repair loop the review exists to
+drive. A settled-mode node is still doomed by CANCELLED or SKIPPED dependencies,
+because those mean the graph is being torn down rather than that something went
+wrong.
+
+The rule is re-checked at claim time rather than trusted from the stored READY
+status. READY is a cached derivation; a claim must not depend on a cache.
+
+## Reopening a node
+
+`reopenNode` puts a FAILED or TIMED_OUT node back in the queue, and revives the
+dependents it had skipped. It is narrow on purpose — a failed node is a fact,
+and this is not an "un-fail" — but there are two cases where the reason for the
+failure turns out not to have happened: a model call reconciled as never having
+reached the provider, and infrastructure since repaired.
+
+The attempt counter is **not** reset. Resetting it would allow an unbounded loop
+through repeated reopening, and the count is also the honest record of how many
+times this was tried. Reopening raises the ceiling by one, which is visible in
+the node rather than hidden in a reset.
+
+## Workers
+
+`src/jev-worker.js` is a process that claims and runs nodes. It shares nothing
+with the API except the database, which is the only thing the claim was ever
+atomic through:
+
+```
+claim (advisory-locked, one winner)
+  -> lease (renewed at a third of its length while the work runs)
+    -> execute
+      -> settle (capture, release, complete or fail)
+```
+
+It adds no scheduler. Which node is next is `claimNextNode`'s answer, from the
+same transaction the inline path uses.
+
+Three things it does that the inline path never had to:
+
+- **Holds the lease open.** A node that outlives its lease is swept and run
+  twice. The renewal timer is released the moment the node settles — a timer
+  left running would keep a dead worker's lease alive and stop the sweeper
+  recovering it, which is the failure the lease exists to prevent, reintroduced
+  by the thing meant to hold it.
+- **Sweeps.** Any worker may recover any stalled node. A node abandoned by a
+  worker that died is not the dead worker's problem to solve.
+- **Stops without abandoning.** A stop signal stops *claiming*. The node in hand
+  finishes and settles, because abandoning work that has already been paid for
+  to wait out a lease is worse than taking a few more seconds to shut down.
+
+`RAZEKIT_JEV_INLINE_EXECUTION=false` turns the autonomous loop into a pure
+coordinator: it creates and expands graphs and decides completion, and runs
+nothing. Both modes read the same graph and reach the same decisions — the
+switch changes who claims, not what is claimable. It defaults to `true`, because
+turning it off without a worker running would leave every graph waiting for a
+claimant that does not exist.
+
+The cycle run record — `run.result.plan.steps`, which the verifier and the
+dashboard read — is written at the point a node settles, inside the executor.
+It used to be written by the caller, which was fine while the caller was always
+the thing running the node and silently wrong the moment a worker was.
+
 ## Not built yet
 
 - **No engine toolchain is configured**, so Konami's engine, build and playtest
