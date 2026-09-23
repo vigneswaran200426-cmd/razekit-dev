@@ -33,6 +33,7 @@ import { listTools, requiredScopesForTools } from "./tool-registry.js";
 import { pendingUserActions, resolvePermissionAction } from "./user-actions.js";
 import { analyzeChangeImpact, instructionHistory } from "./task-instructions.js";
 import { taskGraphView } from "./task-graph-view.js";
+import { taskControlCenter } from "./task-control.js";
 import {
   EXECUTION_LEVELS,
   authorizeFromPreview,
@@ -520,6 +521,15 @@ const server = http.createServer(async (req,res) => {
     // The real graph. Never a synthesised one: a diagram that does not
     // correspond to what is executing is worse than no diagram, because it is
     // believed.
+    // Everything the Control Center needs, from durable records only.
+    m=p.match(/^\/api\/tasks\/([^/]+)\/control$/);
+    if(req.method==="GET"&&m){
+      const task=await assertTaskAccess(m[1], principal);
+      const view=await taskControlCenter({taskId:m[1],tenantId:task.tenantId||principal.tenantId});
+      if(!view) return json(res,404,{error:"Task not found"});
+      return json(res,200,view);
+    }
+
     m=p.match(/^\/api\/tasks\/([^/]+)\/graph$/);
     if(req.method==="GET"&&m){
       const task=await assertTaskAccess(m[1], principal);

@@ -586,6 +586,35 @@ export async function reopenNode({ nodeId, reason = "node reopened", now = new D
 }
 
 /**
+ * Give back the budget a dead worker was holding.
+ *
+ * A worker that dies mid-node leaves its reservation open. Recovering the node
+ * without releasing it means the money stays held for a piece of work that will
+ * now be done again under a NEW reservation — so a task whose worker dies three
+ * times holds three phantom reservations against a budget it never spent, and
+ * because reserveSpend counts concurrent reservations, the task eventually
+ * starves itself on money it never used.
+ *
+ * Done inline rather than through releaseSpend() because this runs inside the
+ * sweep's transaction, and calling out to another transact() would take the
+ * advisory lock a second time and deadlock. Same rule as the audit rows.
+ */
+function releaseNodeReservationsInTransaction(db, node, now) {
+  const prefix = "jev:" + node.id + ":attempt:";
+  const released = [];
+
+  for (const reservation of db.billingReservations) {
+    if (reservation.status !== "reserved") continue;
+    if (!String(reservation.idempotencyKey || "").startsWith(prefix)) continue;
+    reservation.status = "released";
+    reservation.resolvedAt = iso(now);
+    released.push(reservation.id);
+  }
+
+  return released;
+}
+
+/**
  * Reclaim work whose worker stopped reporting, and time out work that has run
  * past its own deadline.
  *
@@ -624,7 +653,8 @@ export async function sweepStalledNodes({ now = new Date(), tenantId = null } = 
         node.status = NODE_STATUS.TIMED_OUT;
         node.finishedAt = iso(now);
         node.error = { message: "Node exceeded its deadline", retryable: false, attempt: node.attempt, at: iso(now) };
-        timedOut.push({ id: node.id, key: node.key, graphId: node.graphId });
+        const releasedOnTimeout = releaseNodeReservationsInTransaction(db, node, now);
+        timedOut.push({ id: node.id, key: node.key, graphId: node.graphId, released: releasedOnTimeout });
         auditInTransaction(db, {
           tenantId: node.tenantId, userId: node.userId, action: "graph.node.timed_out",
           resourceId: node.id, outcome: "failure", now,
@@ -635,20 +665,28 @@ export async function sweepStalledNodes({ now = new Date(), tenantId = null } = 
 
       if (Number(node.attempt || 0) < Number(node.maxAttempts || DEFAULT_MAX_ATTEMPTS)) {
         node.status = NODE_STATUS.READY;
-        recovered.push({ id: node.id, key: node.key, graphId: node.graphId });
+        const releasedOnRecovery = releaseNodeReservationsInTransaction(db, node, now);
+        recovered.push({ id: node.id, key: node.key, graphId: node.graphId, released: releasedOnRecovery });
         auditInTransaction(db, {
           tenantId: node.tenantId, userId: node.userId, action: "graph.node.lease_recovered",
           resourceId: node.id, now,
-          metadata: { graphId: node.graphId, key: node.key, attempt: node.attempt }
+          metadata: {
+            graphId: node.graphId, key: node.key, attempt: node.attempt,
+            releasedReservations: releasedOnRecovery
+          }
         });
       } else {
         node.status = NODE_STATUS.FAILED;
         node.finishedAt = iso(now);
         node.error = { message: "Worker lease expired with no attempts remaining", retryable: false, attempt: node.attempt, at: iso(now) };
+        const releasedOnFailure = releaseNodeReservationsInTransaction(db, node, now);
         auditInTransaction(db, {
           tenantId: node.tenantId, userId: node.userId, action: "graph.node.failed",
           resourceId: node.id, outcome: "failure", now,
-          metadata: { graphId: node.graphId, key: node.key, reason: "lease-exhausted" }
+          metadata: {
+            graphId: node.graphId, key: node.key, reason: "lease-exhausted",
+            releasedReservations: releasedOnFailure
+          }
         });
       }
     }
