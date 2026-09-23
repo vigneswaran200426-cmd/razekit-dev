@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -74,7 +74,11 @@ const initialState = {
   // whole point is that it outlives the process that discovered it: the money
   // may already have been spent at the provider, and only a person or a
   // provider-side lookup can settle what actually happened.
-  modelReconciliations: []
+  modelReconciliations: [],
+  // What a user was shown before they agreed to a task. Kept because it is the
+  // record of what was consented to: an authorization that cannot be traced to
+  // something a person actually read is not one.
+  taskPreviews: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -104,6 +108,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-17-model-reconciliation")) {
     db.migrationsApplied.push("phase-17-model-reconciliation");
+  }
+  if (!db.migrationsApplied.includes("phase-18-task-lifecycle")) {
+    db.migrationsApplied.push("phase-18-task-lifecycle");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";

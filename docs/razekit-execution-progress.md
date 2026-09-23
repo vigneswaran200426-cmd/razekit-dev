@@ -21,9 +21,10 @@ Completion states are used literally:
 
 ## Current phase
 
-**Phase 7 — task creation lifecycle.** Requirements → authorization prediction →
-permission prediction → resource prediction → execution level → budget preview →
-confirmation → funded task. Not started.
+**Phase 11/12 — runtime permission escalation and user actions.** A task that
+meets a scope it was not pre-authorized for must stop, surface a request, and
+resume on approval. The broker already refuses; what is missing is the request,
+the waiting state and the resume.
 
 ## Completed
 
@@ -40,6 +41,9 @@ confirmation → funded task. Not started.
 | 7 | Model cost estimation (min/expected/max/confidence) | IMPLEMENTED | `jev-model-domain.js`; confidence is deliberately 0.35 with no provider pricing configured |
 | 4 | **Provider UNKNOWN outcome and reconciliation** | VERIFIED | `test/model-reconciliation.test.js`: durable record, no retry, provider lookup when the adapter supports one and an honest "unsupported" when it does not, resolve-and-resume through `reopenNode` |
 | 5 | **Bounded model context** | VERIFIED | `test/model-context.test.js`: core survives every level of compaction, transcripts never forwarded, over-budget reported rather than trimmed |
+| 8 | **Task creation lifecycle** | VERIFIED | `test/task-lifecycle.test.js` and `test/task-api.test.js`: a preview creates nothing and grants nothing; a task cannot be created without a confirmed one; tools added after the preview are refused |
+| 9 | **Execution levels (LOW / MID / HIGH / CUSTOM)** | VERIFIED | same files: a higher level is a wider envelope, never a pre-approval for deployment or a data write; a custom policy is validated whole or rejected whole |
+| 10 | **Authorization prediction** | VERIFIED | same files: prediction is labelled as prediction, reads the request rather than calling a paid model, and never becomes an authorization without a matching confirmation |
 | 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
 ## In progress
@@ -48,13 +52,12 @@ Nothing.
 
 ## Not started
 
-Phases 8–24 (task lifecycle, execution levels,
-authorization prediction, runtime permission, user actions, running-task
-changes, Control Center, live preview, payment core, UroPay, payment security,
-reconciliation, payouts, admin finance, admin control centre), 25–28 (worker
-process, cloud, worker pools, scale), 29–32 (real providers, Konami engine,
-Kit), 33–39 (UI), 40–42 (Dev Department, notifications), 43–47 (resilience,
-idempotency, tenant/tool/payment security sweeps), 48–66.
+Phases 11–24 (runtime permission escalation, user actions, running-task changes,
+Control Center, live preview, payment core, UroPay, payment security,
+reconciliation, payouts, admin finance, admin control centre), 26–28 (cloud,
+worker pools, scale), 29–32 (real providers, Konami engine, Kit), 33–39 (UI),
+40–42 (Dev Department, notifications), 43–47 (resilience, idempotency,
+tenant/tool/payment security sweeps), 48–66.
 
 ## Blocked external
 
@@ -74,7 +77,7 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 257 tests — 226 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Local (`npm test`) | 276 tests — 245 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`). Run three times consecutively with no flakes. |
 | Real Neon | 27 pass, 0 fail; run with `RAZEKIT_DATABASE_URL` set |
 
 ## Known defects and weaknesses
@@ -105,16 +108,20 @@ phase by phase.
   primitives are proven cross-process against Neon, but the worker LOOP itself
   has not been run as several OS processes against Neon simultaneously. That is
   a load-test, and it belongs with Phase 28.
+- **A narrower authorization has nowhere to escalate to yet.** Tasks now start
+  without `deployment:deploy` or `database:write`, and the broker correctly
+  refuses them — but there is no request-and-approve path, so such a step fails
+  the node instead of waiting for the user. That is Phase 11 and it is the next
+  thing built.
 - **`drainGraph` is still the inline path.** It is unchanged and still used by
   tests and by single-process deployments; the worker is the alternative, not
   yet the only way.
 
 ## Next exact action
 
-Phase 7/8 — the task lifecycle before execution. Today a task arrives already
-authorized: `task.authorization` is set by whoever created it and the loop
-trusts it. What is missing is everything in front of that — predicted
-requirements, predicted tools and permissions, an execution level (LOW / MID /
-HIGH / CUSTOM), a budget estimate the user sees before agreeing to it, and the
-confirmation that turns a prediction into an authorization. Prediction is not
-authorization and must not become it.
+Phase 11/12 — runtime permission escalation. A task now starts with a narrower
+authorization than it used to, which makes the missing half visible: when it
+reaches `deployment:deploy` or `database:write` the broker refuses and the node
+fails, where it should raise a `UserActionRequest`, move the task to
+WAITING_FOR_PERMISSION, and resume on approval. Approval scopes are once / node
+/ task / project, defaulting to the narrowest. Nothing auto-grants.

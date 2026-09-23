@@ -6,8 +6,15 @@ const { dashboardPage } = await import("../src/dashboard-page.js");
 test("standalone frontend contains the complete task control surface", () => {
   assert.match(dashboardPage, /RazeKit DEV — Control Center/);
   assert.match(dashboardPage, /\+ New task/);
-  assert.match(dashboardPage, /Run preflight/);
+  assert.match(dashboardPage, /Review task/);
   assert.match(dashboardPage, /Authorize & create/);
+  // The preview is not optional decoration: a task created without one cannot
+  // be authorized, so a frontend without it is a frontend that cannot create
+  // tasks at all.
+  assert.match(dashboardPage, /\/api\/tasks\/preview/);
+  assert.match(dashboardPage, /previewFingerprint/);
+  assert.match(dashboardPage, /Will stop and ask you for/);
+  assert.match(dashboardPage, /Nothing runs and nothing is authorized until you confirm/);
   assert.match(dashboardPage, /WORKING|DECISION NEEDED|IMPORTANT UPDATE|BLOCKED|COMPLETED/);
   assert.match(dashboardPage, /Tell the agent what to change/);
   assert.match(dashboardPage, /Approve/);

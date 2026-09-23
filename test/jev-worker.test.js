@@ -127,17 +127,25 @@ test("a worker holds its lease open while a node runs longer than the lease", as
   // A lease far shorter than the work. Without renewal this node is stale
   // before it finishes, and the sweeper takes it away mid-write.
   const leaseMs = 600;
-  const samples = [];
+  let initialExpiry = null;
+  let renewedExpiry = null;
 
   // The delay has to happen INSIDE node execution, after the claim — a delay
-  // before the claim would prove nothing about the lease.
+  // before the claim would prove nothing about the lease. And the wait is for
+  // the renewal to be OBSERVED rather than for a fixed number of milliseconds,
+  // so a slow machine makes this test slower rather than flaky.
   const runtime = {
     async execute(step) {
-      for (let i = 0; i < 5; i += 1) {
-        await new Promise(resolve => setTimeout(resolve, 120));
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
         const db = await loadDb();
         const node = db.graphNodes.find(item => item.key === "slow" && item.taskId === agent.taskId);
-        samples.push(node.leaseExpiresAt);
+        if (initialExpiry === null) initialExpiry = node.leaseExpiresAt;
+        else if (Date.parse(node.leaseExpiresAt) > Date.parse(initialExpiry)) {
+          renewedExpiry = node.leaseExpiresAt;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
       return { operation: step.kind, path: step.path };
     }
@@ -145,15 +153,10 @@ test("a worker holds its lease open while a node runs longer than the lease", as
 
   const result = await runWorkerOnce({ workerId: "worker-slow", leaseMs, runtime });
 
+  assert.ok(renewedExpiry, "the lease was never renewed while the node was running");
+  assert.ok(Date.parse(renewedExpiry) > Date.parse(initialExpiry));
   assert.equal(result.status, "succeeded");
   assert.equal(result.leaseLost, false, "the worker lost its own lease while still working");
-
-  // The work outran the original lease window...
-  const first = Date.parse(samples[0]);
-  const last = Date.parse(samples[samples.length - 1]);
-  assert.ok(samples.length >= 5);
-  // ...and the expiry moved, which only happens because something renewed it.
-  assert.ok(last > first, "the lease was never renewed: " + samples.join(", "));
 
   const view = await graphForTask({ taskId: agent.taskId, tenantId, includeFinished: true });
   assert.equal(view.nodes.find(n => n.key === "slow").status, "succeeded");

@@ -31,6 +31,18 @@ import { listModelSessions } from "./model-sessions.js";
 import { readBlackboard, listContextSnapshots } from "./blackboard.js";
 import { listTools, requiredScopesForTools } from "./tool-registry.js";
 import {
+  EXECUTION_LEVELS,
+  authorizeFromPreview,
+  createTaskPreview,
+  executionLevels,
+  getTaskPreview,
+  markPreviewConfirmed,
+  narrowPreauthorizedScopes,
+  predictTaskRequirements,
+  estimateTaskBudget,
+  validateCustomPolicy
+} from "./task-lifecycle.js";
+import {
   approvePermission,
   denyPermission,
   getAuthorizationPlan,
@@ -214,7 +226,47 @@ const server = http.createServer(async (req,res) => {
       const i=await body(req);
       if(!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
       if(!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
-      return json(res,200,buildPreflight(i));
+      // The old shape, kept so existing callers keep working, plus the
+      // prediction in the form the preview uses. Neither authorizes anything.
+      return json(res,200,{
+        ...buildPreflight(i),
+        prediction: predictTaskRequirements(i),
+        budget: estimateTaskBudget(i, { level: i.level || EXECUTION_LEVELS.MID })
+      });
+    }
+
+    if (req.method === "GET" && p === "/api/execution-levels") {
+      return json(res,200,{ levels: executionLevels(), tools: listTools() });
+    }
+
+    // A preview costs nothing, creates no task, spawns no agent and grants no
+    // permission. It exists so that the confirmation which follows is a
+    // confirmation OF something the user actually read.
+    if (req.method === "POST" && p === "/api/tasks/preview") {
+      const i=await body(req);
+      if(!TASK_TYPES.has(i.taskType)) return json(res,400,{error:"Invalid taskType"});
+      if(!i.originalRequest?.trim()) return json(res,400,{error:"originalRequest is required"});
+      const level = i.level || EXECUTION_LEVELS.MID;
+      if(!Object.values(EXECUTION_LEVELS).includes(level)) return json(res,400,{error:"Invalid execution level"});
+      if(level===EXECUTION_LEVELS.CUSTOM){
+        const check=validateCustomPolicy(i.custom||{});
+        if(!check.valid) return json(res,400,{error:"Invalid custom policy",errors:check.errors});
+      }
+      const result=await createTaskPreview(i,{
+        level,
+        custom:i.custom||null,
+        tenantId:principal.tenantId,
+        userId:principal.userId
+      });
+      if(!result.ok) return json(res,400,{error:"Invalid custom policy",errors:result.errors});
+      return json(res,200,result.preview);
+    }
+
+    const previewMatch=p.match(/^\/api\/tasks\/preview\/([^/]+)$/);
+    if(req.method==="GET"&&previewMatch){
+      const preview=await getTaskPreview(previewMatch[1],{tenantId:principal.tenantId});
+      if(!preview) return json(res,404,{error:"Task preview not found"});
+      return json(res,200,preview);
     }
 
     if (req.method === "POST" && p === "/api/tasks") {
@@ -227,6 +279,26 @@ const server = http.createServer(async (req,res) => {
       if(!Number.isFinite(Number(i.maxBudget))||Number(i.maxBudget)<=0) return json(res,400,{error:"maxBudget must be greater than zero"});
       if(!i.acceptAutonomousExecution) return json(res,400,{error:"Autonomous execution authorization is required"});
 
+      // A task's authorization comes from a preview the user confirmed, never
+      // from this request body. Without one there is nothing the user can be
+      // said to have agreed to: the old path granted every predicted scope
+      // from a single boolean, which is consent to a sentence read as consent
+      // to a tool list nobody was shown.
+      if(!i.previewId) return json(res,400,{
+        error:"A confirmed task preview is required. POST /api/tasks/preview first.",
+        use:"/api/tasks/preview"
+      });
+
+      const confirmation=await authorizeFromPreview({
+        previewId:i.previewId,
+        fingerprint:i.previewFingerprint,
+        acceptAutonomousExecution:i.acceptAutonomousExecution===true,
+        maxBudget:Number(i.maxBudget),
+        tenantId:principal.tenantId,
+        userId:principal.userId
+      });
+      if(!confirmation.ok) return json(res,400,{error:"Task could not be authorized",errors:confirmation.errors});
+
       const now=new Date().toISOString();
       const pf=buildPreflight(i);
       const task={
@@ -237,8 +309,13 @@ const server = http.createServer(async (req,res) => {
         title:i.title||"Untitled task",
         originalRequest:i.originalRequest.trim(),
         specification:i.specification||i.originalRequest.trim(),
-        requestedTools:i.requestedTools||pf.predictedTools,
-        estimatedBudget:pf.estimatedBudget,
+        // The confirmed preview decides, not the request body: a tool added
+        // between the preview and this call is exactly what the fingerprint
+        // check above exists to refuse.
+        requestedTools:confirmation.authorization.tools,
+        estimatedBudget:confirmation.preview.budget.expected,
+        executionLevel:confirmation.authorization.level,
+        limits:confirmation.limits,
         maxBudget:Number(i.maxBudget),
         actualSpend:0,
         currency:"USD",
@@ -246,12 +323,7 @@ const server = http.createServer(async (req,res) => {
         agentType:agentTypeForTask(i.taskType),
         agentInstanceId:null,
         deadline:i.deadline||null,
-        authorization:{
-          autonomousExecution:true,
-          scopes:pf.authorizationScopes,
-          toolScopes:requiredScopesForTools(i.requestedTools||pf.predictedTools),
-          authorizedAt:now
-        },
+        authorization:confirmation.authorization,
         createdAt:now,
         updatedAt:now
       };
@@ -263,6 +335,9 @@ const server = http.createServer(async (req,res) => {
         }
       });
 
+      // One agreement starts one task.
+      await markPreviewConfirmed(i.previewId, task.id);
+
       const agent=await spawnAgentForTask(task.id);
       const started=await startAgent(agent.id);
       await writeAudit({
@@ -272,9 +347,19 @@ const server = http.createServer(async (req,res) => {
         action: "task.create",
         resourceType: "task",
         resourceId: task.id,
-        metadata: { taskType: task.taskType, agentType: task.agentType }
+        metadata: {
+          taskType: task.taskType,
+          agentType: task.agentType,
+          executionLevel: task.executionLevel,
+          previewId: i.previewId,
+          previewFingerprint: confirmation.authorization.previewFingerprint
+        }
       });
-      return json(res,201,{task:await getTask(task.id),agent:started});
+      return json(res,201,{
+        task:await getTask(task.id),
+        agent:started,
+        warnings:confirmation.warnings
+      });
     }
 
     if (req.method === "GET" && p === "/api/tasks") {
@@ -314,15 +399,28 @@ const server = http.createServer(async (req,res) => {
       const tenant = await ensureTenant(principal.tenantId);
       assertTenantActive(tenant);
       const i=await body(req);
+      const existing=(await loadDb()).tasks.find(x=>x.id===m[1]);
+      if(!existing) return json(res,404,{error:"Task not found"});
+
+      // The same narrowing the preview path applies. This endpoint used to take
+      // whatever scopes the body asked for, which made it a way around the rule
+      // that a deployment or a data write is never pre-authorized.
+      const requested=i.scopes||existing.authorization?.toolScopes||requiredScopesForTools(existing.requestedTools||[]);
+      const narrowed=narrowPreauthorizedScopes(requested,existing.requestedTools||[]);
+
       const task=await transact(db=>{
         const t=db.tasks.find(x=>x.id===m[1]);
         if(!t)throw new Error("Task not found");
         t.authorization={
-  autonomousExecution:true,
-  scopes:i.scopes||t.authorization?.scopes||[],
-  toolScopes:t.authorization?.toolScopes||requiredScopesForTools(t.requestedTools||[]),
-  authorizedAt:new Date().toISOString()
-};
+          autonomousExecution:true,
+          level:t.authorization?.level||null,
+          scopes:["autonomous task execution",...narrowed.granted],
+          toolScopes:narrowed.granted,
+          tools:t.requestedTools||[],
+          neverPreauthorized:narrowed.refused.map(item=>item.scope),
+          authorizedBy:principal.userId,
+          authorizedAt:new Date().toISOString()
+        };
         t.status=TASK_STATUS.READY_FOR_AGENT;t.updatedAt=new Date().toISOString();
         return t;
       });
@@ -1015,7 +1113,15 @@ function getTask(taskId){
   });
 }
 
-server.listen(PORT, () => runtimeCoordinator.start());
+// The coordinator is what ticks tasks forward. It runs by default, because an
+// engine that accepts tasks and never advances them is a silent hang — but a
+// deployment that runs a separate scheduler, or one that only serves the API
+// while workers do the work, turns it off here rather than by not deploying it.
+const COORDINATOR_ENABLED = String(process.env.RAZEKIT_COORDINATOR_ENABLED ?? "true").toLowerCase() !== "false";
+
+server.listen(PORT, () => {
+  if (COORDINATOR_ENABLED) runtimeCoordinator.start();
+});
 
 function shutdown(signal) {
   runtimeCoordinator.stop();
