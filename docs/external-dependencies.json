@@ -1,0 +1,139 @@
+{
+  "$comment": [
+    "Every external service RazeKit DEV needs, and exactly how far each one has got.",
+    "The four columns are deliberately separate. Code being finished says nothing about",
+    "whether a credential exists; a credential existing says nothing about whether anyone",
+    "has onboarded the account; and none of those is the same as having watched the thing",
+    "work. Collapsing them into one 'status' is how an integration comes to be believed",
+    "complete because a file was written.",
+    "",
+    "States: COMPLETE | READY_FOR_CREDENTIAL | BLOCKED_EXTERNAL | UNVERIFIED | NOT_REQUIRED",
+    "",
+    "No secret value appears in this file, and none ever should. It names the ENVIRONMENT",
+    "VARIABLE a value belongs in, never the value."
+  ],
+  "generatedAt": "2026-09-24",
+  "commit": "ab5ea26",
+  "dependencies": [
+    {
+      "service": "OpenAI",
+      "type": "AI_PROVIDER",
+      "purpose": "Astra — planning, review and verification interpretation.",
+      "codeStatus": "COMPLETE",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "COMPLETE",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["OPENAI_API_KEY"],
+      "nonSecretConfig": ["RAZEKIT_ASTRA_MODEL"],
+      "notes": "The adapter, usage extraction, cost extraction, timeout classification, UNKNOWN handling and reconciliation contract are all implemented and tested against deterministic doubles. No model node has ever run against the real provider, so nothing here is VERIFIED."
+    },
+    {
+      "service": "Anthropic",
+      "type": "AI_PROVIDER",
+      "purpose": "Fable — implementation and repair.",
+      "codeStatus": "COMPLETE",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "COMPLETE",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["ANTHROPIC_API_KEY"],
+      "nonSecretConfig": ["RAZEKIT_FABLE_MODEL"],
+      "notes": "Same as OpenAI. Neither provider exposes a general 'did this request succeed' lookup, so a real UNKNOWN outcome will need a person; the code says so rather than guessing."
+    },
+    {
+      "service": "Neon Postgres",
+      "type": "DATABASE",
+      "purpose": "The durable store. Graphs, leases, ledger, audit.",
+      "codeStatus": "COMPLETE",
+      "credentialStatus": "CONFIGURED",
+      "onboardingStatus": "COMPLETE",
+      "verificationStatus": "COMPLETE",
+      "environment": ["RAZEKIT_DATABASE_URL"],
+      "nonSecretConfig": ["RAZEKIT_STORE=postgres"],
+      "notes": "27 tests pass against the real instance at schema 9, including cross-process claim atomicity and lease recovery."
+    },
+    {
+      "service": "AWS",
+      "type": "CLOUD",
+      "purpose": "Control plane, worker fleet, artifact storage, secrets, metrics.",
+      "codeStatus": "NOT_STARTED",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "BLOCKED_EXTERNAL",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+      "nonSecretConfig": ["AWS_REGION", "AWS_ACCOUNT_ID"],
+      "notes": "The IAM user razekit-dev-automation exists with no attached policy and no access key, so nothing can be provisioned. Infrastructure-as-code has not been written. Policy documents for least-privilege roles exist under infra/aws/policies with ${AWS_ACCOUNT_ID} placeholders. The owner must decide between GitHub OIDC and an access key before anything can be attached."
+    },
+    {
+      "service": "GitHub",
+      "type": "SOURCE_CONTROL",
+      "purpose": "Repository operations on the user's behalf, and CI as evidence.",
+      "codeStatus": "NOT_STARTED",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "BLOCKED_EXTERNAL",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY"],
+      "nonSecretConfig": ["GITHUB_APP_INSTALLATION_ID"],
+      "notes": "No GitHub App exists. Both RazeKit repositories are public, which is a constraint on what may ever be committed, not on the integration itself. No external CI has run."
+    },
+    {
+      "service": "UroPay",
+      "type": "PAYMENT",
+      "purpose": "Inbound payment that funds a task's budget.",
+      "codeStatus": "NOT_STARTED",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "BLOCKED_EXTERNAL",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["UROPAY_API_KEY", "UROPAY_API_SECRET", "UROPAY_WEBHOOK_SECRET"],
+      "nonSecretConfig": ["UROPAY_WEBHOOK_URL", "UROPAY_ENVIRONMENT"],
+      "notes": "The adapter behind the existing payment abstraction has not been written in razekit-dev. A UroPay adapter exists in the separate razekit.com repository and is out of scope here. Refund and payout capability is undocumented for this merchant configuration and must be treated as unavailable rather than assumed."
+    },
+    {
+      "service": "Game engine toolchain",
+      "type": "GAME_ENGINE",
+      "purpose": "Konami's actual build, runtime and playtest path.",
+      "codeStatus": "PARTIAL",
+      "credentialStatus": "NOT_REQUIRED",
+      "onboardingStatus": "BLOCKED_EXTERNAL",
+      "verificationStatus": "UNVERIFIED",
+      "environment": [],
+      "nonSecretConfig": ["RAZEKIT_GAME_ENGINE", "RAZEKIT_GAME_ENGINE_PATH"],
+      "notes": "Konami's orchestration through JEV is verified. No engine is installed on this machine, so no engine has ever built anything. Engine, build, playtest and packager adapter interfaces exist and deterministic doubles satisfy them; that is orchestration, not a game."
+    },
+    {
+      "service": "Social platforms",
+      "type": "SOCIAL_PLATFORM",
+      "purpose": "Kit — publishing to Instagram, Threads, X, TikTok, YouTube, Reddit.",
+      "codeStatus": "NOT_STARTED",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "BLOCKED_EXTERNAL",
+      "verificationStatus": "UNVERIFIED",
+      "environment": [],
+      "nonSecretConfig": [],
+      "notes": "Each platform needs its own registered OAuth application and, for several of them, review before publishing scopes are granted. None exists. Kit is not built."
+    },
+    {
+      "service": "Resend",
+      "type": "EMAIL",
+      "purpose": "Transactional email.",
+      "codeStatus": "COMPLETE",
+      "credentialStatus": "BLOCKED_EXTERNAL",
+      "onboardingStatus": "COMPLETE",
+      "verificationStatus": "UNVERIFIED",
+      "environment": ["RESEND_API_KEY"],
+      "nonSecretConfig": ["EMAIL_DRIVER"],
+      "notes": "razekit-dev sends no email of its own today. Listed because the platform will, and because an invalid key has caused an authentication bypass in the sibling repository before — an email driver that fails silently is a security property, not a convenience."
+    },
+    {
+      "service": "Laya",
+      "type": "LOCAL_DECISION_ENGINE",
+      "purpose": "Local risk and routing hints during development.",
+      "codeStatus": "COMPLETE",
+      "credentialStatus": "NOT_REQUIRED",
+      "onboardingStatus": "COMPLETE",
+      "verificationStatus": "COMPLETE",
+      "environment": [],
+      "nonSecretConfig": [],
+      "notes": "Runs offline on this machine. Advisory only: it is consulted at decision boundaries and recorded, and it authorizes nothing. It is not part of the running platform."
+    }
+  ]
+}

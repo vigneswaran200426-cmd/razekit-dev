@@ -12,16 +12,16 @@ executing.
 
 ## Current phase
 
-**Phase 8/9/12 — multi-process worker execution and recovery.** The worker
-loop is proven in one process; its claim/lease primitives are proven
-cross-process against Neon. What is not proven is several OS processes running
-the loop concurrently against one database.
+**Payment core and UroPay (main §22–29).** Not started in `razekit-dev`.
 
 ## Completed in this program
 
 | # | Phase | State | Evidence |
 |---|---|---|---|
 | 13b | **Dynamic replan of a running graph** | VERIFIED | `test/jev-replan.test.js` — 10 tests: completed nodes are byte-for-byte unchanged, a second change folds into a pending one, sequential changes each get their own cycle, a failed build still accepts a change, a cancelled graph refuses one, and a replan widens neither authorization nor budget |
+| — | **Dead-worker budget release** (defect found) | VERIFIED | `test/jev-worker-settlement.test.js` — a worker that died left its reservation open forever; three deaths left three phantom holds against a budget nothing had spent. The sweep now releases them. |
+| 13/14/16/17/18 | **Control Center** | VERIFIED | `test/task-control.test.js` and a browser run — overview, budget (estimate and actual kept apart, overruns shown as overruns), permissions (denials as visible as grants), instruction history, activity from the audit log |
+| 67 | **External dependency registry** | COMPLETE | `docs/external-dependencies.json` — 10 services, four independent status columns, no secret values |
 
 ## Carried in from the previous program (re-verified, not rebuilt)
 
@@ -45,7 +45,7 @@ CI · Konami engine toolchain · Kit · premium UI · Dev Department.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 303 tests — 272 pass, 0 fail, 31 skipped |
+| Local (`npm test`) | 315 tests — 281 pass, 0 fail, 34 skipped |
 | Real Neon | 27 pass, 0 fail at schema 9 |
 
 ## Blocked external
@@ -61,6 +61,10 @@ CI · Konami engine toolchain · Kit · premium UI · Dev Department.
 
 ## Next exact action
 
-Multi-process worker recovery against real Neon: spawn two `src/jev-worker.js`
-processes, kill one mid-node, and assert the other completes it with no
-duplicate settlement. The primitives are proven; the processes are not.
+Payment core. The existing ledger, reservation and fee primitives are reused —
+no second financial system — and UroPay goes behind the gateway abstraction:
+createOrder, getOrder, signed requests, signed webhook verification, webhook
+deduplication, and authoritative status reconciled through the provider's order
+lookup rather than trusted from the webhook. Production credentials stay
+BLOCKED_EXTERNAL; the adapter is built and tested against deterministic doubles
+first.
