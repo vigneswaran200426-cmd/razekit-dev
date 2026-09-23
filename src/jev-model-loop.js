@@ -1,5 +1,5 @@
 import { transact, id } from "./store.js";
-import { getAgent } from "./agent-manager.js";
+import { getAgent, resumeAgent } from "./agent-manager.js";
 import { profileForAgent } from "./jev-profiles.js";
 import { tenantForTask } from "./tenant-security.js";
 import { graphForTask } from "./jev.js";
@@ -12,6 +12,7 @@ import {
   createModelGraphForAgent,
   expandWithExecutionPlan,
   expandWithRepair,
+  expandWithReplan,
   expandWithVerify,
   maxRepairCycles,
   nextModelGraphAction
@@ -229,6 +230,82 @@ export async function advanceModelGraph(agentInstanceId, {
 }
 
 /**
+ * Apply an approved change to a graph that is already running.
+ *
+ * Called once the change has an instruction version — never before. The order
+ * matters: the version is what the replan node reads, so replanning first
+ * would plan against the instruction the user just replaced.
+ *
+ * Refuses a cancelled graph. A cancelled task is one someone stopped on
+ * purpose, and quietly restarting it because a change arrived afterwards would
+ * spend money against a decision that had already been made.
+ */
+export async function replanRunningGraph({
+  taskId,
+  tenantId = null,
+  reason = "user change",
+  instructionVersion = null,
+  now = new Date()
+}) {
+  const resolvedTenant = tenantId || await tenantForTask(taskId);
+  const view = await graphForTask({ taskId, tenantId: resolvedTenant, includeFinished: true });
+
+  if (!view) {
+    // Nothing to re-shape. The change still stands: the graph has not been
+    // built yet, so the planner will read the new instruction when it runs.
+    return { replanned: false, reason: "no-graph" };
+  }
+  if (view.graph.status === "cancelled") {
+    return { replanned: false, reason: "graph-cancelled", graphId: view.graph.id };
+  }
+
+  const result = await expandWithReplan({
+    graphId: view.graph.id,
+    nodes: view.nodes,
+    reason,
+    instructionVersion,
+    now
+  });
+
+  if (!result.expanded) {
+    return { replanned: false, reason: result.reason, graphId: view.graph.id, ...result };
+  }
+
+  const agentInstanceId = taskAgentIdFrom(view);
+  await syncRun(agentInstanceId, {
+    status: ORCHESTRATION_STATUS.ITERATING,
+    lastDecision: "replan"
+  }).catch(() => undefined);
+
+  // New work exists, so the task is no longer finished. Reopening a completed
+  // one is deliberate and visible rather than implicit: a task going from
+  // "delivered" back to "spending money" is something a person should be able
+  // to see happening.
+  let reopened = false;
+  const agent = await getAgent(agentInstanceId);
+  if (agent && ["waiting_user", "blocked", "completed"].includes(agent.status)) {
+    await resumeAgent(agentInstanceId, "Change approved; continuing with the new work.", {
+      allowCompleted: true
+    });
+    reopened = true;
+  }
+
+  return {
+    replanned: true,
+    reopened,
+    graphId: view.graph.id,
+    replanKey: result.replanKey,
+    reworkKey: result.reworkKey,
+    index: result.index,
+    dependsOn: result.dependsOn
+  };
+}
+
+function taskAgentIdFrom(view) {
+  return view.graph.agentInstanceId;
+}
+
+/**
  * Turn one node's execution into a loop outcome.
  *
  * Two outcomes are deliberately terminal rather than retried:
@@ -359,7 +436,8 @@ async function expandExecution({ agentInstanceId, agent, action, now }) {
 
   try {
     const expanded = await expandWithExecutionPlan({
-      graphId: action.graphId, plan, agent, cycle: action.cycle, now
+      graphId: action.graphId, plan, agent, cycle: action.cycle,
+      producerKey: action.producerKey ?? null, now
     });
     return {
       outcome: MODEL_LOOP_OUTCOME.EXPANDED,

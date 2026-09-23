@@ -69,6 +69,69 @@ function modelNode(kind, { key, dependsOn = [], complexity = 1, maxAttempts = 2,
   };
 }
 
+// ── Cycles ───────────────────────────────────────────────────────────────────
+//
+// A graph grows in cycles: something produces a plan, the plan becomes
+// execution nodes, a review judges them. The cycle number used to be derived by
+// counting review nodes, which was correct only while every cycle arrived in
+// the same order — and stopped being correct the moment a user change could
+// append a producer out of band.
+//
+// So it is derived from the keys themselves. Three families carry a cycle:
+//
+//   execN:*                      the work of cycle N
+//   fable-repair-N / -rework-N   the producer of cycle N+1
+//   astra-review-N               the verdict on cycle N
+//
+// `fable-implement` is the producer of cycle 1 and is indexed 0, so that
+// "the producer of cycle K has index K-1" holds without a special case.
+
+const EXEC_KEY = /^exec(\d+):/;
+const PRODUCER_KEY = /^fable-(?:repair|rework)-(\d+)$/;
+const REVIEW_KEY = /^astra-review-(\d+)$/;
+
+export function graphCycles(nodes) {
+  const execCycles = new Set();
+  const producerIndexes = new Set();
+  const reviewCycles = new Set();
+
+  for (const node of nodes) {
+    const key = node.key || "";
+    let match;
+    if ((match = EXEC_KEY.exec(key))) execCycles.add(Number(match[1]));
+    else if ((match = PRODUCER_KEY.exec(key))) producerIndexes.add(Number(match[1]));
+    else if ((match = REVIEW_KEY.exec(key))) reviewCycles.add(Number(match[1]));
+    else if (key === "fable-implement") producerIndexes.add(0);
+  }
+
+  const highest = set => (set.size === 0 ? 0 : Math.max(...set));
+
+  return {
+    execCycles,
+    producerIndexes,
+    reviewCycles,
+    highestExec: highest(execCycles),
+    highestProducer: highest(producerIndexes),
+    highestReview: highest(reviewCycles)
+  };
+}
+
+/**
+ * Which node produced the plan that cycle `cycle` executes.
+ *
+ * Returns null when nothing has produced it yet, which is the difference
+ * between "this cycle is waiting on its producer" and "this cycle is ready to
+ * be expanded" — a distinction the old one-key rule could not express.
+ */
+export function producerKeyFor(cycle, byKey) {
+  if (cycle <= 1) return byKey.has("fable-implement") ? "fable-implement" : null;
+  const repair = "fable-repair-" + (cycle - 1);
+  if (byKey.has(repair)) return repair;
+  const rework = "fable-rework-" + (cycle - 1);
+  if (byKey.has(rework)) return rework;
+  return null;
+}
+
 /**
  * Create the task's graph with the model phases in it.
  *
@@ -122,11 +185,18 @@ export async function expandWithExecutionPlan({
   plan,
   agent,
   cycle = 1,
+  // Which node produced this plan. Passed in because the caller has already
+  // read the graph to decide that this cycle is expandable, and re-deriving it
+  // here from a stale assumption is how the old "cycle-1 means repair" rule
+  // broke as soon as a rework could produce a cycle too.
+  producerKey = null,
   now = new Date()
 }) {
   const profile = profileForAgent(agent);
   const normalized = profile.normalizePlan(plan);
   if (!normalized) throw new Error("The implementation did not produce a usable execution plan");
+
+  const producer = producerKey || (cycle <= 1 ? "fable-implement" : "fable-repair-" + (cycle - 1));
 
   const prefix = "exec" + cycle + ":";
   const executionNodes = graphFromExecutionPlan(normalized, { taskType: profile.taskType })
@@ -134,7 +204,7 @@ export async function expandWithExecutionPlan({
       ...node,
       key: prefix + node.key,
       dependsOn: node.dependsOn.length === 0
-        ? [cycle === 1 ? "fable-implement" : "fable-repair-" + (cycle - 1)]
+        ? [producer]
         : node.dependsOn.map(dep => prefix + dep)
     }));
 
@@ -186,6 +256,106 @@ export async function expandWithRepair({ graphId, reviewKey, cycle, now = new Da
     reason: "review requested a revision (cycle " + cycle + ")",
     now
   });
+}
+
+/**
+ * Re-shape a running graph around a change the user has approved.
+ *
+ * Two nodes, appended at the frontier:
+ *
+ *   astra-replan-N   reads the new instruction and the work already done, and
+ *                    produces a plan for what is left. It depends on whatever
+ *                    the graph's current terminal nodes are, in SETTLED mode,
+ *                    so a change can be applied to a task that has failed as
+ *                    well as to one that is running.
+ *
+ *   fable-rework-N   implements that plan, and becomes the producer of the next
+ *                    execution cycle.
+ *
+ * Completed work is never touched. That is not politeness: those nodes were
+ * paid for, and discarding them because a later instruction arrived would
+ * charge the user twice for the same build. A replan changes what happens
+ * NEXT; it cannot reach backwards.
+ *
+ * It also cannot widen anything. The nodes it adds declare no tool scopes of
+ * their own, the execution nodes they eventually produce are checked against
+ * the task's authorization by the broker exactly as any other node is, and each
+ * carries a budget the ledger must agree to before it runs. A replan changes
+ * the graph's SHAPE and nothing else.
+ */
+export async function expandWithReplan({
+  graphId,
+  nodes,
+  reason = "user change",
+  instructionVersion = null,
+  now = new Date()
+}) {
+  const cycles = graphCycles(nodes);
+  const byKey = new Map(nodes.map(node => [node.key, node]));
+
+  // The next execution cycle that does not exist yet.
+  const nextExec = cycles.highestExec + 1;
+  // If something already produces that cycle, the change applies to the one
+  // after it: the in-flight plan finishes first rather than being abandoned
+  // half-built.
+  const index = producerKeyFor(nextExec, byKey) ? nextExec : nextExec - 1;
+
+  const replanKey = "astra-replan-" + index;
+  const reworkKey = "fable-rework-" + index;
+
+  // A change arriving while an earlier one has not been implemented yet folds
+  // into it: the rework reads the CURRENT instruction version, which already
+  // contains both changes, so a second pair would do the same work twice.
+  //
+  // Once the rework has run, that is no longer true — it planned against the
+  // instruction as it was then — so a later change gets its own cycle.
+  const pending = nodes.find(node =>
+    /^fable-rework-\d+$/.test(node.key || "") && node.status !== "succeeded"
+  );
+  if (pending) {
+    return {
+      expanded: false,
+      reason: "a replan is already pending",
+      replanKey: "astra-replan-" + pending.key.slice("fable-rework-".length),
+      reworkKey: pending.key,
+      index: Number(pending.key.slice("fable-rework-".length))
+    };
+  }
+
+  if (byKey.has(replanKey) || byKey.has(reworkKey)) {
+    return { expanded: false, reason: "a replan already exists for this cycle", replanKey, reworkKey, index };
+  }
+
+  // The frontier: every node nothing else depends on. Depending on the whole
+  // frontier rather than on one node is what makes the replan happen AFTER the
+  // work in flight, instead of racing it.
+  const terminal = nodes
+    .filter(node => !nodes.some(other => (other.dependsOn ?? []).includes(node.key)))
+    .map(node => node.key);
+
+  const replan = modelNode(MODEL_NODE_KINDS.MODEL_REPLAN, {
+    key: replanKey,
+    dependsOn: terminal
+  });
+  replan.dependsOnMode = DEPENDENCY_MODE.SETTLED;
+  replan.payload.reason = reason;
+  replan.payload.instructionVersion = instructionVersion;
+
+  const rework = modelNode(MODEL_NODE_KINDS.MODEL_IMPLEMENT, {
+    key: reworkKey,
+    dependsOn: [replanKey]
+  });
+  rework.payload.reason = reason;
+  rework.payload.instructionVersion = instructionVersion;
+
+  const result = await expandGraph({
+    graphId,
+    nodes: [replan, rework],
+    reason: "replan after " + reason,
+    now
+  });
+
+  return { ...result, expanded: true, replanKey, reworkKey, index, dependsOn: terminal };
 }
 
 /**
@@ -247,16 +417,20 @@ export async function nextModelGraphAction({ taskId, tenantId }) {
   const byKey = new Map(view.nodes.map(node => [node.key, node]));
   const succeeded = key => byKey.get(key)?.status === "succeeded";
 
-  // How many implement/review cycles have already been appended.
-  const cycles = view.nodes.filter(n => n.key.startsWith("astra-review-")).length;
+  const counts = graphCycles(view.nodes);
+  const cycles = counts.highestReview;
 
-  // The implementation has produced a plan, but no execution nodes exist yet.
-  const implementKey = cycles === 0 ? "fable-implement" : "fable-repair-" + cycles;
-  if (succeeded(implementKey) && !view.nodes.some(n => n.key.startsWith("exec" + (cycles + 1) + ":"))) {
+  // A producer has finished its plan and the cycle it feeds does not exist yet.
+  // Derived from the keys rather than from a review count, so a rework appended
+  // by a user change feeds its cycle exactly as a repair does.
+  const nextExec = counts.highestExec + 1;
+  const producerKey = producerKeyFor(nextExec, byKey);
+  if (producerKey && succeeded(producerKey) && !counts.execCycles.has(nextExec)) {
     return {
       action: "expand-execution",
-      cycle: cycles + 1,
-      implementNode: byKey.get(implementKey),
+      cycle: nextExec,
+      producerKey,
+      implementNode: byKey.get(producerKey),
       graphId: view.graph.id
     };
   }

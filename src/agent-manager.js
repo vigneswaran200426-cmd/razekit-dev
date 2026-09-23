@@ -292,11 +292,17 @@ export async function acceptanceForTask(taskId) {
  * stopped for a person can be resumed — resuming a completed or cancelled one
  * would be a way to bring finished work back to life without anyone deciding to.
  */
-export async function resumeAgent(agentId, reason = "Resumed by the user") {
+export async function resumeAgent(agentId, reason = "Resumed by the user", { allowCompleted = false } = {}) {
   return transact(db => {
     const agent = db.agentInstances.find(x => x.id === agentId);
     if (!agent) throw new Error("Agent instance not found");
-    if (![AGENT_STATUS.WAITING_USER, AGENT_STATUS.BLOCKED].includes(agent.status)) {
+    // A finished task can be reopened, but only when the caller says so out
+    // loud. Letting it happen implicitly would mean a task could go from
+    // "delivered" back to "spending money" without anyone deciding to.
+    const resumable = allowCompleted
+      ? [AGENT_STATUS.WAITING_USER, AGENT_STATUS.BLOCKED, AGENT_STATUS.COMPLETED]
+      : [AGENT_STATUS.WAITING_USER, AGENT_STATUS.BLOCKED];
+    if (!resumable.includes(agent.status)) {
       throw new Error("Agent cannot resume from status " + agent.status);
     }
 

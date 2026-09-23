@@ -1,5 +1,6 @@
 import { id, loadDb, transact } from "./store.js";
 import { appendInstructionVersion } from "./task-instructions.js";
+import { replanRunningGraph } from "./jev-model-loop.js";
 import { AGENT_STATUS, TASK_STATUS } from "./domain.js";
 import { latestVerification } from "./verification.js";
 import { addAgentMessage } from "./agent-manager.js";
@@ -407,10 +408,20 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
     authoredBy: result.task.userId || "user"
   });
 
+  // The running graph is re-shaped around the change, after the version exists
+  // — the replan node reads that version, so doing it the other way round would
+  // plan against the instruction the user just replaced.
+  const replan = await replanRunningGraph({
+    taskId,
+    reason: "approved change: " + result.change.content.slice(0, 120),
+    instructionVersion: instruction.version
+  }).catch(error => ({ replanned: false, reason: error.message }));
+
   await addAgentMessage(result.agent.id, "user", result.change.content, {
     source: "task-dashboard",
     changeId: result.change.id,
     instructionVersion: instruction.version,
+    replanned: replan.replanned,
     approved: true
   });
   await writeAudit({
@@ -421,10 +432,12 @@ export async function approveChange(taskId, changeId, { maxBudget = null } = {})
     metadata: {
       changeId: result.change.id,
       budget: result.change.budgetSnapshot,
-      instructionVersion: instruction.version
+      instructionVersion: instruction.version,
+      replanned: replan.replanned,
+      replanKey: replan.replanKey ?? null
     }
   });
-  return { ...result, instruction };
+  return { ...result, instruction, replan };
 }
 
 export async function denyChange(taskId, changeId, reason = "User declined the requested change") {
