@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -69,7 +69,12 @@ const initialState = {
   metrics: [],
   alerts: [],
   taskGraphs: [],
-  graphNodes: []
+  graphNodes: [],
+  // A model call whose outcome we could not determine. Durable because the
+  // whole point is that it outlives the process that discovered it: the money
+  // may already have been spent at the provider, and only a person or a
+  // provider-side lookup can settle what actually happened.
+  modelReconciliations: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -96,6 +101,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-14-jev-dag")) {
     db.migrationsApplied.push("phase-14-jev-dag");
+  }
+  if (!db.migrationsApplied.includes("phase-17-model-reconciliation")) {
+    db.migrationsApplied.push("phase-17-model-reconciliation");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";

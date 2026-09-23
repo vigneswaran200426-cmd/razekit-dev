@@ -21,9 +21,8 @@ Completion states are used literally:
 
 ## Current phase
 
-**Phase 4 — provider UNKNOWN outcome / reconciliation.** Detection, refusal to
-retry and the durable reconciliation record are done; the operator-facing
-reconcile-and-resume path is not.
+**Phase 6 — worker-process execution.** `drainGraph` and the loop still run
+nodes inline in the API process.
 
 ## Completed
 
@@ -38,16 +37,16 @@ reconcile-and-resume path is not.
 | 3 | **Bounded repair cycles** | VERIFIED | same file: limit 2 produces exactly one repair, then `NEEDS_REVIEW` |
 | 6 | Model budgeting: estimate → reserve → call → capture → release | VERIFIED | reservation observed from inside the provider call |
 | 7 | Model cost estimation (min/expected/max/confidence) | IMPLEMENTED | `jev-model-domain.js`; confidence is deliberately 0.35 with no provider pricing configured |
+| 4 | **Provider UNKNOWN outcome and reconciliation** | VERIFIED | `test/model-reconciliation.test.js`: durable record, no retry, provider lookup when the adapter supports one and an honest "unsupported" when it does not, resolve-and-resume through `reopenNode` |
+| 5 | **Bounded model context** | VERIFIED | `test/model-context.test.js`: core survives every level of compaction, transcripts never forwarded, over-budget reported rather than trimmed |
 
 ## In progress
 
-| # | Phase | State | What remains |
-|---|---|---|---|
-| 4 | Provider UNKNOWN outcome | IMPLEMENTED | Detection, no-retry, reservation captured, `model.reconciliation.pending` written. No operator reconcile-and-resume action yet, and no provider-side lookup (needs a real provider). |
+Nothing. Phase 6 has not started.
 
 ## Not started
 
-Phases 5 (context compaction), 8–24 (task lifecycle, execution levels,
+Phases 8–24 (task lifecycle, execution levels,
 authorization prediction, runtime permission, user actions, running-task
 changes, Control Center, live preview, payment core, UroPay, payment security,
 reconciliation, payouts, admin finance, admin control centre), 25–28 (worker
@@ -73,8 +72,8 @@ phase by phase.
 
 | Suite | Result |
 |---|---|
-| Local (`npm test`) | 240 tests — 209 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
-| Real Neon | run separately with `RAZEKIT_DATABASE_URL` set; see the commit message for the figure at that commit |
+| Local (`npm test`) | 251 tests — 220 pass, 0 fail, 31 skipped (the skips are the Postgres suites without `RAZEKIT_DATABASE_URL`) |
+| Real Neon | 27 pass, 0 fail at `bf27972`; run with `RAZEKIT_DATABASE_URL` set |
 
 ## Known defects and weaknesses
 
@@ -90,15 +89,24 @@ phase by phase.
 - **An overrun is recorded after the fact.** When a provider charges more than
   was reserved, the excess is charged directly and the task stops. That is
   honest, not ideal; the ideal is an estimate that was not too low.
-- **No provider-side reconciliation.** An UNKNOWN outcome stops the task and
-  records what to reconcile. Nothing queries the provider, because there is no
-  provider credential to query with.
+- **No provider-side reconciliation is possible with a real provider yet.** The
+  lookup path exists and is tested against an adapter that implements it, but
+  neither OpenAI nor Anthropic exposes a general "did this request succeed"
+  query, so in practice a real UNKNOWN needs a person. The code says so instead
+  of guessing.
+- **Resolving a reconciliation moves no money.** When a call provably never
+  happened, the capture made on the pessimistic assumption stands and the amount
+  a reversal would be for is recorded (`reversalOwedMinor`). Reversing it is a
+  finance action with its own authority; inventing one here would be the fake
+  refund this codebase refuses to write elsewhere.
 - **`drainGraph` still runs inline.** Worker-process execution (Phase 25) has
   not started.
 
 ## Next exact action
 
-Phase 5 — bounded context compilation for model nodes: `compileModelContext`
-already passes only the task, the node's instruction and its dependencies'
-structured outputs, but it passes the entire blackboard alongside them and has
-no size ceiling. Add the ceiling and the summarise-and-recompile path.
+Phase 6 — worker-process execution. `drainGraph` and `advanceModelGraph` both
+run nodes inline in whatever process calls them. Add a worker entry point that
+claims from the graph, renews its lease while it works, and settles — so a
+worker's death is recovered by lease expiry rather than by the API process
+having survived. The claim/lease/recovery primitives already exist and are
+proven against Neon; what is missing is a process that uses them.

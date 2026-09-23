@@ -283,6 +283,48 @@ export async function acceptanceForTask(taskId) {
   return db.acceptanceCriteria.filter(x => x.taskId === taskId);
 }
 
+/**
+ * Put a task that stopped for the user back to work.
+ *
+ * The counterpart to blocking, and deliberately not a restart: the workspace,
+ * the graph and every settled node stay exactly as they were, so resuming
+ * continues the task rather than paying for it twice. Only a task that actually
+ * stopped for a person can be resumed — resuming a completed or cancelled one
+ * would be a way to bring finished work back to life without anyone deciding to.
+ */
+export async function resumeAgent(agentId, reason = "Resumed by the user") {
+  return transact(db => {
+    const agent = db.agentInstances.find(x => x.id === agentId);
+    if (!agent) throw new Error("Agent instance not found");
+    if (![AGENT_STATUS.WAITING_USER, AGENT_STATUS.BLOCKED].includes(agent.status)) {
+      throw new Error("Agent cannot resume from status " + agent.status);
+    }
+
+    const task = db.tasks.find(x => x.id === agent.taskId);
+    const now = new Date().toISOString();
+
+    agent.status = AGENT_STATUS.RUNNING;
+    agent.executionState = "running";
+    agent.lastHeartbeat = now;
+    agent.updatedAt = now;
+    if (task) {
+      task.status = TASK_STATUS.RUNNING;
+      task.updatedAt = now;
+    }
+
+    db.agentMessages.push({
+      id: id("msg"),
+      agentInstanceId: agent.id,
+      role: "system",
+      content: reason,
+      metadata: { resumed: true },
+      createdAt: now
+    });
+
+    return { ...agent };
+  });
+}
+
 export async function recordSpend(agentId, amount, reason = "billable action") {
   const spend = Number(amount);
   if (!Number.isFinite(spend) || spend < 0) throw new Error("Spend amount must be a non-negative number");

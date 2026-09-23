@@ -61,8 +61,14 @@ export async function callModel(registry, request) {
     };
   } catch (error) {
     if (error instanceof ModelRuntimeError) throw error;
-    throw new ModelRuntimeError(error.message || "Model call failed", {
+    const wrapped = new ModelRuntimeError(error.message || "Model call failed", {
       retryable: error.retryable !== false
     });
+    // Only the adapter knows whether the request left this machine, and that
+    // single bit decides whether a retry is free or pays a second time. Losing
+    // it in the wrap would leave the classification guessing from the message.
+    if (error.transmitted !== undefined) wrapped.transmitted = error.transmitted;
+    if (error.providerRef !== undefined) wrapped.providerRef = error.providerRef;
+    throw wrapped;
   }
 }

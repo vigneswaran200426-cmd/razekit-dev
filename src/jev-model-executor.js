@@ -3,6 +3,8 @@ import { callModel, ModelRuntimeError } from "./model-runtime.js";
 import { listModelSessions, provisionModelSessions, updateModelSession, appendModelMessage, recordModelUsage } from "./model-sessions.js";
 import { reserveNodeBudget, releaseNodeBudget, settleNodeSpend } from "./jev-budget.js";
 import { writeBlackboard } from "./blackboard.js";
+import { compileNodeContext } from "./model-context.js";
+import { recordUnknownModelOutcome } from "./model-reconciliation.js";
 import {
   MODEL_NODE_KINDS,
   agentForModelKind,
@@ -119,13 +121,21 @@ export async function executeModelNode({
   }
 
   const prompt = node.payload?.prompt || promptForModelKind(kind);
+
+  // The same key the budget reservation uses, and for the same reason: it
+  // identifies THIS attempt at THIS node. A provider that honours idempotency
+  // serves a repeat of it from its own record instead of doing — and charging
+  // for — the work twice, and it is the handle a reconciliation lookup needs.
+  const idempotencyKey = "jev:" + node.id + ":attempt:" + Number(node.attempt || 1);
+
   const request = {
     provider: session.provider,
     model: session.model,
     role,
     system: "You are part of an isolated autonomous development agent. Do not assume access to resources outside the task.",
     prompt,
-    context
+    context,
+    idempotencyKey
   };
 
   await updateModelSession(session.id, { state: "running", lastError: null });
@@ -194,6 +204,24 @@ export async function executeModelNode({
       { nodeKey: node.key, error: settlementError.message },
       "jev-model-executor"
     );
+  }
+
+  if (failure?.outcomeUnknown) {
+    // Durable, because the whole point is that it outlives this process. The
+    // blackboard entry the loop writes is for the user; this is the record a
+    // person or a provider lookup settles.
+    await recordUnknownModelOutcome({
+      agentInstanceId: agent.id,
+      taskId: agent.taskId,
+      tenantId: node.tenantId,
+      node,
+      provider: session.provider,
+      model: session.model,
+      idempotencyKey,
+      reservedMinor: hold.amountMinor,
+      capturedMinor: settledMinor,
+      detail: { message: failure.message, role, kind }
+    });
   }
 
   if (failure) {
@@ -309,37 +337,21 @@ async function persistModelOutput({ agent, node, kind, profile, response, struct
 /**
  * The context a model node is given.
  *
- * Explicit references, not the whole conversation. A node receives the task,
- * its own instruction, and the structured outputs of the nodes it depends on —
- * which is what section 39 asks for and what keeps a long repair chain from
- * growing its own context until it overflows.
+ * Explicit references, not the whole conversation, and bounded: a node receives
+ * the task, its own instruction, the structured outputs of the nodes it depends
+ * on, and the blackboard keys that carry decisions — compiled to a ceiling by
+ * model-context.js rather than accumulated until a provider refuses it.
+ *
+ * The compaction record travels with the result rather than being logged, so a
+ * task whose later calls worked from a trimmed view can show that.
  */
 export async function compileModelContext({ agent, task, node, graphNodes, blackboard }) {
-  const dependencyKeys = new Set(node.dependsOn ?? []);
-  const upstream = (graphNodes ?? [])
-    .filter(item => dependencyKeys.has(item.key) && item.output?.structured)
-    .map(item => ({ key: item.key, kind: item.kind, structured: item.output.structured }));
-
-  return {
-    task: {
-      id: task.id,
-      type: task.taskType,
-      title: task.title,
-      request: task.originalRequest,
-      specification: task.specification
-    },
-    agent: { id: agent.id, type: agent.agentType },
-    node: { key: node.key, kind: node.kind, attempt: node.attempt },
-    // Objective verification evidence, when this node has any. A verify node
-    // interprets a record that already exists; it does not produce one, and it
-    // cannot reach past this into the verifier.
-    evidence: node.payload?.evidence ?? null,
-    upstream,
-    // The blackboard is passed for the adapters that read it directly. It is
-    // the projection the orchestrator already built, not raw model transcripts.
-    blackboard: blackboard ?? []
-  };
+  const { context, compaction } = compileNodeContext({
+    agent, task, node, graphNodes: graphNodes ?? [], blackboard: blackboard ?? []
+  });
+  return { ...context, compaction };
 }
+
 
 /**
  * Record a model node transition on the run, so the Control Center and the

@@ -488,6 +488,71 @@ export async function failNode({ nodeId, leaseId, error, retryable = false, now 
 // ── Recovery ─────────────────────────────────────────────────────────────────
 
 /**
+ * Put a settled node back in the queue for another attempt.
+ *
+ * Deliberately narrow. This is not a general "un-fail" — a failed node is a
+ * fact — it is the one operation an operator or a resolved reconciliation needs
+ * when the reason for the failure turns out not to have happened: a model call
+ * that never reached the provider, a step that failed on infrastructure since
+ * repaired.
+ *
+ * The attempt counter is NOT reset. A node that has used its attempts stays
+ * used up, because resetting it would let a node loop forever through repeated
+ * reopening, and the count is also the honest record of how many times this was
+ * tried. Reopening grants one more attempt by raising the ceiling by one, which
+ * is visible in the node rather than hidden in a reset.
+ *
+ * Dependents that were SKIPPED because of this node are returned to PENDING, so
+ * the work downstream of the failure becomes reachable again rather than
+ * staying dead behind a node that is now alive.
+ */
+export async function reopenNode({ nodeId, reason = "node reopened", now = new Date() }) {
+  return transact(db => {
+    const node = db.graphNodes.find(item => item.id === nodeId);
+    if (!node) throw new Error("Unknown graph node: " + nodeId);
+
+    if (![NODE_STATUS.FAILED, NODE_STATUS.TIMED_OUT].includes(node.status)) {
+      return { accepted: false, reason: "node-not-failed", node: { ...node } };
+    }
+
+    const graph = db.taskGraphs.find(item => item.id === node.graphId);
+    if (!graph || graph.status === GRAPH_STATUS.CANCELLED) {
+      return { accepted: false, reason: "graph-not-open", node: { ...node } };
+    }
+
+    node.status = NODE_STATUS.PENDING;
+    node.error = null;
+    node.finishedAt = null;
+    node.leaseId = null;
+    node.leaseOwner = null;
+    node.leaseExpiresAt = null;
+    node.maxAttempts = Number(node.maxAttempts || DEFAULT_MAX_ATTEMPTS) + 1;
+    node.updatedAt = iso(now);
+
+    // Whatever this node doomed is only doomed while it is.
+    for (const item of nodesOfGraph(db, node.graphId)) {
+      if (item.status === NODE_STATUS.SKIPPED && item.skippedBecause === node.key) {
+        item.status = NODE_STATUS.PENDING;
+        item.skippedBecause = null;
+        item.updatedAt = iso(now);
+      }
+    }
+
+    const nodes = nodesOfGraph(db, node.graphId);
+    applyReadiness(nodes);
+    refreshGraph(db, graph, now);
+
+    auditInTransaction(db, {
+      tenantId: node.tenantId, userId: node.userId,
+      action: "graph.node.reopened", resourceId: node.id, outcome: "success", now,
+      metadata: { graphId: node.graphId, key: node.key, attempt: node.attempt, reason }
+    });
+
+    return { accepted: true, node: { ...node }, graph: { ...graph } };
+  });
+}
+
+/**
  * Reclaim work whose worker stopped reporting, and time out work that has run
  * past its own deadline.
  *
