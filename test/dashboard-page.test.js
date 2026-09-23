@@ -15,6 +15,16 @@ test("standalone frontend contains the complete task control surface", () => {
   assert.match(dashboardPage, /previewFingerprint/);
   assert.match(dashboardPage, /Will stop and ask you for/);
   assert.match(dashboardPage, /Nothing runs and nothing is authorized until you confirm/);
+  // A task blocked on a permission must be answerable here, not only through
+  // the API — a blocked task the user cannot see is indistinguishable from a
+  // broken one.
+  assert.match(dashboardPage, /\/actions/);
+  // The choices themselves come from the API — the page renders whatever
+  // scopes the broker offers rather than hard-coding its own list, so that a
+  // new scope cannot appear in one place and not the other.
+  assert.match(dashboardPage, /data-allow/);
+  assert.match(dashboardPage, /data-scope/);
+  assert.match(dashboardPage, /answerAction/);
   assert.match(dashboardPage, /WORKING|DECISION NEEDED|IMPORTANT UPDATE|BLOCKED|COMPLETED/);
   assert.match(dashboardPage, /Tell the agent what to change/);
   assert.match(dashboardPage, /Approve/);

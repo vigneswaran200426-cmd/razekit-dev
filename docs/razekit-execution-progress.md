@@ -44,7 +44,7 @@ mutated historical record.
 | 9 | **Execution levels (LOW / MID / HIGH / CUSTOM)** | VERIFIED | same files: a higher level is a wider envelope, never a pre-approval for deployment or a data write; a custom policy is validated whole or rejected whole |
 | 10 | **Authorization prediction** | VERIFIED | same files: prediction is labelled as prediction, reads the request rather than calling a paid model, and never becomes an authorization without a matching confirmation |
 | 11 | **Runtime permission escalation** | VERIFIED | `test/user-actions.test.js`: an approval is a single use by default, a step-scoped one does not leak to another step, only a task-scoped one widens the standing authorization, and approving reopens the step that was refused |
-| 12 | **User action surface** | VERIFIED | same file: permission, credential, decision, reconciliation and budget waits in one list, blocking first, tenant-scoped |
+| 12 | **User action surface** | VERIFIED | same file, plus the Control Center: permission, credential, decision, reconciliation and budget waits in one list, blocking first, tenant-scoped. Verified in a browser — a blocked task shows the request, "Allow once" grants exactly one use, the next attempt asks again. |
 | 25 | **Worker-process execution** | VERIFIED | `test/jev-worker.test.js`: a worker claims, holds its lease through a node that outlives it, recovers a node another worker abandoned, stops without abandoning, and runs a whole task while the loop only coordinates. Cross-process claiming is proven separately against Neon. |
 
 ## In progress
@@ -108,18 +108,13 @@ phase by phase.
   primitives are proven cross-process against Neon, but the worker LOOP itself
   has not been run as several OS processes against Neon simultaneously. That is
   a load-test, and it belongs with Phase 28.
-- **The Control Center does not show pending actions yet.** `GET
-  /api/tasks/:id/actions` returns them and the answer endpoint works, but the
-  dashboard still renders only change requests. Until it does, a user on the web
-  UI sees fewer of the things their task is waiting on than the API knows about.
 - **`drainGraph` is still the inline path.** It is unchanged and still used by
   tests and by single-process deployments; the worker is the alternative, not
   yet the only way.
 
 ## Next exact action
 
-Render the pending-action list in the Control Center, then Phase 13 — running
-task changes. `submitUserCommand` already analyses a change and can require
+Phase 13 — running task changes. `submitUserCommand` already analyses a change and can require
 approval; what is missing is the instruction VERSION (historical records are
 never mutated), the impact analysis covering permissions and budget as well as
 requirements, and the replan that turns an approved change into new graph nodes
