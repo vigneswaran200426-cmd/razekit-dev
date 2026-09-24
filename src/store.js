@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -82,7 +82,13 @@ const initialState = {
   // Append-only. What the task was asked to do, at each point it was asked.
   // Flattening these into one specification field is how "what was this work
   // authorized against" stops being answerable.
-  taskInstructions: []
+  taskInstructions: [],
+  // Money coming IN. Separate from billingReservations, which is money the
+  // platform spends on a task's behalf; conflating the two is how a system
+  // comes to believe it has been paid because it reserved something.
+  paymentOrders: [],
+  paymentEvents: [],
+  fundingEntries: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -118,6 +124,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-19-instruction-versions")) {
     db.migrationsApplied.push("phase-19-instruction-versions");
+  }
+  if (!db.migrationsApplied.includes("phase-20-payment-core")) {
+    db.migrationsApplied.push("phase-20-payment-core");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";
