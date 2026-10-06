@@ -1,0 +1,64 @@
+/* RazeKit DEV's register: black ground, platinum text, one controlled neon.
+   Scoped to .dev-os, and shipped only with the DEV chunk, so nothing here can
+   reach the marketplace. Tokens are the design system's own, re-pointed. */
+.dev-os {
+  --bg: 5 6 8;
+  --bg-elevated: 10 12 15;
+  --surface: 14 16 20;
+  --surface-2: 22 25 31;
+  --surface-3: 31 35 43;
+  --surface-inverse: 236 239 244;
+  --line: 38 43 52;
+  --line-strong: 58 64 76;
+  --ink: 236 239 244;
+  --muted: 160 168 180;
+  --subtle: 122 130 143;
+  --disabled: 96 104 116;
+  --ink-inverse: 5 6 8;
+  --primary: 56 214 255;
+  --primary-hover: 24 196 245;
+  --primary-ink: 150 232 255;
+  --primary-wash: 8 36 48;
+  --accent: 150 120 255;
+  --success-wash: 8 40 22;
+  --warning-wash: 48 30 6;
+  --danger-wash: 52 12 12;
+  --info-wash: 8 36 48;
+  position: relative;
+  isolation: isolate;
+  min-height: 70vh;
+  border-radius: 20px;
+  padding: 20px;
+  color: rgb(var(--ink));
+  background:
+    radial-gradient(1200px 500px at 15% -10%, rgb(56 214 255 / 0.07), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgb(150 120 255 / 0.06), transparent 60%),
+    rgb(var(--bg));
+}
+.dev-os :is(.border-line, .border-line\/60) { border-color: rgb(255 255 255 / 0.09); }
+/* White on the neon would fail contrast: filled primary actions take the ground colour. */
+.dev-os :is(.bg-primary, .bg-primary-hover).text-white { color: rgb(5 6 8); }
+.dev-os :is(input, textarea, select) { background: rgb(var(--surface-2)); color: rgb(var(--ink)); border-color: rgb(255 255 255 / 0.12); }
+.dev-os .dev-glass { background: rgb(var(--surface) / 0.72); backdrop-filter: blur(14px); }
+.dev-os > .dev-content { position: relative; z-index: 1; }
+
+/* Assistant: particles gather into her, and scatter when she leaves. */
+.dev-assistant { position: fixed; right: 20px; bottom: 20px; z-index: 50; width: min(360px, calc(100vw - 32px)); }
+.dev-particle {
+  position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; border-radius: 9999px;
+  background: rgb(236 239 244); box-shadow: 0 0 6px rgb(56 214 255 / 0.8);
+  transform: translate(var(--dx), var(--dy)); opacity: 0;
+}
+.dev-assistant[data-phase='entering'] .dev-particle { animation: dev-gather 520ms cubic-bezier(.2,.8,.2,1) forwards; animation-delay: var(--delay); }
+.dev-assistant[data-phase='leaving'] .dev-particle { animation: dev-scatter 460ms cubic-bezier(.4,0,.8,.2) forwards; animation-delay: var(--delay); }
+.dev-figure { transition: opacity 260ms ease-out, filter 260ms ease-out, transform 260ms ease-out; }
+.dev-assistant[data-phase='entering'] .dev-figure { opacity: 0; filter: blur(6px); transform: scale(.96); }
+.dev-assistant[data-phase='present'] .dev-figure { opacity: 1; filter: none; transform: none; }
+.dev-assistant[data-phase='leaving'] .dev-figure { opacity: 0; filter: blur(8px); transform: scale(1.02); }
+@keyframes dev-gather { 0% { opacity: 0; transform: translate(var(--dx), var(--dy)); } 60% { opacity: 1; } 100% { opacity: 0; transform: translate(0, 0); } }
+@keyframes dev-scatter { 0% { opacity: 1; transform: translate(0, 0); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dev-assistant .dev-particle { display: none; }
+  .dev-figure { transition: opacity 200ms linear; filter: none !important; transform: none !important; }
+}
