@@ -1,17 +1,31 @@
+import { timingSafeEqual } from "node:crypto";
 import { loadDb, transact } from "./store.js";
+import { AuthError, ROLES } from "./auth.js";
 import { AGENT_STATUS, TASK_STATUS } from "./domain.js";
 import { ensureTenant, writeAudit } from "./tenant-security.js";
 import { setTenantLimits } from "./abuse-controls.js";
 import { revokeCredentialReference } from "./credential-vault.js";
 import { cancelAgent } from "./agent-manager.js";
 
-function validAdminToken(token) {
+// The operator token is for machines (worker agents, scripted operations).
+// People operate through an owner or admin account instead.
+export function validAdminToken(token) {
   const expected = process.env.RAZEKIT_ADMIN_TOKEN;
-  return Boolean(expected && token && token === expected);
+  if (!expected || typeof token !== "string") return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function assertAdminToken(token) {
-  if (!validAdminToken(token)) throw new Error("Admin authorization required");
+  if (!validAdminToken(token)) throw new AuthError(403, "Admin authorization required");
+}
+
+/** Operator access: the operator token, or a signed-in owner or admin. */
+export function assertOperator(headers = {}, principal = null) {
+  if (validAdminToken(headers["x-razekit-admin-token"])) return;
+  if (principal?.authenticated && (principal.role === ROLES.OWNER || principal.role === ROLES.ADMIN)) return;
+  throw new AuthError(403, "Admin authorization required");
 }
 
 export async function tenantSecuritySummary(tenantId) {

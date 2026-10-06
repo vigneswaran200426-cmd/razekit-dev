@@ -1,74 +1,43 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { id, loadDb, transact } from "./store.js";
+import { AUTH_MODES, AuthError, ROLES, authMode, resolveSession, sessionTokenFromRequest } from "./auth.js";
 
 export const DEFAULT_TENANT_ID = "local-tenant";
 export const DEFAULT_USER_ID = "local-user";
 
 const REDACT_KEYS = /secret|token|password|authorization|api[-_]?key|credential/i;
 
-export function principalFromHeaders(headers = {}) {
+/**
+ * Who is calling. In session mode this is the signed-in DEV account behind the
+ * session cookie (or bearer token); a missing or expired session is a 401. In
+ * local mode (development and tests only — refused in production) it is
+ * whatever the x-razekit-tenant-id / x-razekit-user-id headers say.
+ *
+ * There is no third path: DEV no longer accepts a principal signed by the
+ * RazeKit marketplace.
+ */
+export async function resolvePrincipal(headers = {}) {
   const requestId = String(headers["x-razekit-request-id"] || id("req"));
-  const requireSigned = process.env.RAZEKIT_REQUIRE_SIGNED_PRINCIPAL === "true";
-  const principalToken = headers["x-razekit-principal"];
 
-  if (requireSigned) {
-    const principal = verifyPrincipalToken(principalToken, process.env.RAZEKIT_PRINCIPAL_SECRET);
-    return { ...principal, requestId };
+  if (authMode() === AUTH_MODES.LOCAL) {
+    return {
+      tenantId: String(headers["x-razekit-tenant-id"] || DEFAULT_TENANT_ID),
+      userId: String(headers["x-razekit-user-id"] || DEFAULT_USER_ID),
+      role: ROLES.MEMBER,
+      authenticated: false,
+      requestId
+    };
   }
 
+  const resolved = await resolveSession(sessionTokenFromRequest(headers));
+  if (!resolved) throw new AuthError(401, "Sign in required");
   return {
-    tenantId: String(headers["x-razekit-tenant-id"] || DEFAULT_TENANT_ID),
-    userId: String(headers["x-razekit-user-id"] || DEFAULT_USER_ID),
+    tenantId: resolved.user.tenantId,
+    userId: resolved.user.id,
+    email: resolved.user.email,
+    role: resolved.user.role,
+    sessionId: resolved.sessionId,
+    authenticated: true,
     requestId
-  };
-}
-
-export function issuePrincipalToken({ tenantId, userId, ttlMs = 15 * 60_000 } = {}, secret = process.env.RAZEKIT_PRINCIPAL_SECRET) {
-  if (!secret?.trim()) throw new Error("Principal signing secret is required");
-  if (!tenantId?.trim() || !userId?.trim()) throw new Error("tenantId and userId are required");
-  const ttl = Number(ttlMs);
-  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > 24 * 60 * 60_000) {
-    throw new Error("Principal token TTL must be between 1ms and 24 hours");
-  }
-
-  const payload = Buffer.from(JSON.stringify({
-    tenantId,
-    userId,
-    exp: Date.now() + ttl
-  })).toString("base64url");
-  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
-  return payload + "." + signature;
-}
-
-function verifyPrincipalToken(token, secret) {
-  if (!secret?.trim() || typeof token !== "string") {
-    throw new Error("Signed principal authorization is required");
-  }
-
-  const parts = token.split(".");
-  if (parts.length !== 2) throw new Error("Invalid signed principal");
-
-  const expected = createHmac("sha256", secret).update(parts[0]).digest();
-  const supplied = Buffer.from(parts[1], "base64url");
-  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) {
-    throw new Error("Invalid signed principal");
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
-  } catch {
-    throw new Error("Invalid signed principal payload");
-  }
-
-  if (!payload.tenantId?.trim() || !payload.userId?.trim() || !Number.isFinite(Number(payload.exp))) {
-    throw new Error("Invalid signed principal claims");
-  }
-  if (Number(payload.exp) <= Date.now()) throw new Error("Signed principal has expired");
-
-  return {
-    tenantId: String(payload.tenantId),
-    userId: String(payload.userId)
   };
 }
 

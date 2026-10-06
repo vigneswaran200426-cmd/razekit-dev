@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -82,7 +82,14 @@ const initialState = {
   // Append-only. What the task was asked to do, at each point it was asked.
   // Flattening these into one specification field is how "what was this work
   // authorized against" stops being answerable.
-  taskInstructions: []
+  taskInstructions: [],
+  // DEV's own accounts. Identity used to be a principal signed by the RazeKit
+  // marketplace; it now lives here, so DEV needs nothing from the marketplace
+  // to know who is calling. Passwords are scrypt hashes, never plaintext.
+  users: [],
+  // Server-side sessions. Only a SHA-256 of each token is stored, so a copy of
+  // the database cannot be replayed as a login.
+  sessions: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -118,6 +125,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-19-instruction-versions")) {
     db.migrationsApplied.push("phase-19-instruction-versions");
+  }
+  if (!db.migrationsApplied.includes("phase-20-dev-accounts")) {
+    db.migrationsApplied.push("phase-20-dev-accounts");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";
