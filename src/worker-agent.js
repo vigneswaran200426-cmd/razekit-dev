@@ -66,10 +66,11 @@ export function detectCapabilities() {
 
 async function call(path, body, { admin = false } = {}) {
   const headers = { "content-type": "application/json" };
-  if (admin) {
-    if (!ADMIN_TOKEN) throw new Error("RAZEKIT_ADMIN_TOKEN is required for worker registration");
-    headers["x-razekit-admin-token"] = ADMIN_TOKEN;
-  }
+  if (admin && !ADMIN_TOKEN) throw new Error("RAZEKIT_ADMIN_TOKEN is required for worker registration");
+  // Every /internal/ call carries the operator token when one is configured:
+  // with session auth the whole internal surface is operator-only, heartbeats
+  // included.
+  if (ADMIN_TOKEN) headers["x-razekit-admin-token"] = ADMIN_TOKEN;
 
   const response = await fetch(ENGINE_URL + path, {
     method: "POST",

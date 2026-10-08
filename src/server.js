@@ -122,7 +122,7 @@ import { recordObservabilityEvent, recordMetric, evaluateInfrastructureAlerts, r
 import { buildContainerSpec, buildMicroVMRuntimeSpec, buildGpuWorkerSpec } from "./production-runtimes.js";
 
 import {
-  principalFromHeaders,
+  resolvePrincipal,
   ensureTenant,
   assertTenantActive,
   assertTaskAccess,
@@ -130,7 +130,28 @@ import {
 } from "./tenant-security.js";
 import { enforceTenantLimit, enforceActiveTaskLimit } from "./abuse-controls.js";
 import {
+  AUTH_MODES,
+  AuthError,
+  ROLES,
+  assertProductionAuth,
+  authMode,
+  bootstrapOwner,
+  changePassword,
+  clearedSessionCookie,
+  countUsers,
+  createUser,
+  listUsers,
+  login,
+  revokeSession,
+  sessionCookie,
+  sessionTokenFromRequest,
+  setUserStatus
+} from "./auth.js";
+import { loginPage } from "./login-page.js";
+import {
   assertAdminToken,
+  assertOperator,
+  validAdminToken,
   tenantSecuritySummary,
   suspendTenant,
   resumeTenant,
@@ -151,6 +172,8 @@ const modelConfiguration = configureModelRegistry(modelRegistry);
 // the mistake is still visible.
 if (process.env.NODE_ENV === "production") {
   assertProductionStore();
+  // Likewise identity: production never trusts headers that name a tenant.
+  assertProductionAuth();
 }
 
 const modelOrchestrator = new ModelOrchestrator({ registry: modelRegistry });
@@ -207,21 +230,125 @@ const server = http.createServer(async (req,res) => {
       return res.end(dashboardPage);
     }
 
-    // Everything past this point is identified. When signed principals are
-    // required this throws for an unsigned or forged caller.
-    const principal = principalFromHeaders(req.headers);
+    if (req.method === "GET" && p === "/login") {
+      res.writeHead(200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
+      return res.end(loginPage);
+    }
+
+    // ── Accounts ──────────────────────────────────────────────────────────
+    // DEV's own identity. These run before a principal is resolved because
+    // they are how one is obtained.
+    if (req.method === "GET" && p === "/auth/status") {
+      const users = await countUsers();
+      return json(res,200,{
+        mode:authMode(),
+        signupOpen:process.env.RAZEKIT_SIGNUP === "open",
+        needsBootstrap:users === 0 && Boolean(process.env.RAZEKIT_BOOTSTRAP_TOKEN)
+      });
+    }
+
+    if (req.method === "POST" && p === "/auth/login") {
+      assertSameOrigin(req);
+      const i=await body(req);
+      const session=await login({ email:i.email, password:i.password });
+      res.setHeader("Set-Cookie", sessionCookie(session.token, session.expiresAt));
+      return json(res,200,{ user:session.user, expiresAt:session.expiresAt });
+    }
+
+    if (req.method === "POST" && p === "/auth/signup") {
+      assertSameOrigin(req);
+      if (process.env.RAZEKIT_SIGNUP !== "open") throw new AuthError(403, "Sign-up is closed on this deployment");
+      // Until the owner exists, an open sign-up would hand the first visitor a
+      // deployment with nobody able to administer it.
+      if ((await countUsers()) === 0) throw new AuthError(403, "This deployment has not been set up yet");
+      const i=await body(req);
+      await createUser({ email:i.email, password:i.password, role:ROLES.MEMBER });
+      const session=await login({ email:i.email, password:i.password });
+      res.setHeader("Set-Cookie", sessionCookie(session.token, session.expiresAt));
+      return json(res,201,{ user:session.user, expiresAt:session.expiresAt });
+    }
+
+    if (req.method === "POST" && p === "/auth/bootstrap") {
+      assertSameOrigin(req);
+      const i=await body(req);
+      const user=await bootstrapOwner({ token:i.token, email:i.email, password:i.password });
+      return json(res,201,{ user });
+    }
+
+    if (req.method === "POST" && p === "/auth/logout") {
+      assertSameOrigin(req);
+      await revokeSession(sessionTokenFromRequest(req.headers));
+      res.setHeader("Set-Cookie", clearedSessionCookie());
+      return json(res,200,{ ok:true });
+    }
+
+    // Everything past this point is identified. The operator token identifies
+    // machines (worker agents, scripted operations); everyone else is a DEV
+    // account behind a session, or — in local mode only — a header identity.
+    const operator = validAdminToken(req.headers["x-razekit-admin-token"]);
+    const principal = operator
+      ? {
+          tenantId:String(req.headers["x-razekit-tenant-id"] || "local-tenant"),
+          userId:"operator",
+          role:"operator",
+          authenticated:true,
+          requestId:String(req.headers["x-razekit-request-id"] || "req_operator")
+        }
+      : await resolvePrincipal(req.headers);
+
+    if (req.method !== "GET" && req.method !== "HEAD") assertSameOrigin(req);
+
+    // The machine and operator surface. In session mode an ordinary account
+    // never reaches it: worker leases, checkpoints, workspaces and tool
+    // invocation are not user operations.
+    if (p.startsWith("/internal/") && authMode() === AUTH_MODES.SESSION) {
+      assertOperator(req.headers, principal);
+    }
+
+    if (req.method === "GET" && p === "/auth/me") {
+      if (!principal.authenticated) return json(res,200,{ mode:authMode(), user:null });
+      return json(res,200,{ mode:authMode(), user:{ id:principal.userId, email:principal.email || null, role:principal.role, tenantId:principal.tenantId } });
+    }
+
+    if (req.method === "POST" && p === "/auth/password") {
+      if (!principal.authenticated || principal.role === "operator") throw new AuthError(401, "Sign in required");
+      const i=await body(req);
+      const session=await changePassword(principal.userId, { currentPassword:i.currentPassword, newPassword:i.newPassword });
+      res.setHeader("Set-Cookie", sessionCookie(session.token, session.expiresAt));
+      return json(res,200,{ user:session.user });
+    }
+
+    // Account administration: owner and admins only.
+    if (req.method === "GET" && p === "/admin/users") {
+      assertOperator(req.headers, principal);
+      return json(res,200,await listUsers());
+    }
+
+    if (req.method === "POST" && p === "/admin/users") {
+      assertOperator(req.headers, principal);
+      const i=await body(req);
+      const role = i.role === ROLES.ADMIN ? ROLES.ADMIN : ROLES.MEMBER;
+      return json(res,201,await createUser({ email:i.email, password:i.password, role }));
+    }
+
+    const userStatusMatch=p.match(/^\/admin\/users\/([^/]+)\/status$/);
+    if (req.method === "POST" && userStatusMatch) {
+      assertOperator(req.headers, principal);
+      const i=await body(req);
+      return json(res,200,await setUserStatus(userStatusMatch[1], i.status));
+    }
 
     // Drives the autonomous loop on demand. The coordinator already ticks on a
     // timer; these exist so an integration test, or an operator watching a
     // stuck task, can step the machine deliberately instead of waiting.
     if (req.method === "POST" && p === "/internal/loop/tick") {
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       return json(res,200,await advanceAllAgents({ orchestrator: modelOrchestrator }));
     }
 
     const advanceMatch=p.match(/^\/internal\/agents\/([^/]+)\/advance$/);
     if(req.method==="POST"&&advanceMatch){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const agent=await getAgent(advanceMatch[1]);
       if(!agent)return json(res,404,{error:"Agent not found"});
       return json(res,200,await advanceAgent(advanceMatch[1],{ orchestrator: modelOrchestrator }));
@@ -624,7 +751,7 @@ const server = http.createServer(async (req,res) => {
 
 
     if(req.url && p.startsWith("/internal/admin/")){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
     }
 
     m=p.match(/^\/internal\/admin\/tenants\/([^/]+)\/security$/);
@@ -676,20 +803,20 @@ const server = http.createServer(async (req,res) => {
     }
 
     if(req.method==="POST"&&p==="/internal/infrastructure/pools"){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const i=await body(req);
       return json(res,201,await registerWorkerPool(i));
     }
     m=p.match(/^\/internal\/infrastructure\/pools\/([^/]+)\/status$/);
     if(req.method==="POST"&&m){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const i=await body(req);
       return json(res,200,await setWorkerPoolStatus(m[1],i.status));
     }
 
     m=p.match(/^\/internal\/infrastructure\/workers\/([^/]+)\/status$/);
     if(req.method==="POST"&&m){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const i=await body(req);
       return json(res,200,await setProductionWorkerStatus(m[1],i.status));
     }
@@ -697,7 +824,7 @@ const server = http.createServer(async (req,res) => {
 
 
     if(req.method==="POST"&&p==="/internal/infrastructure/workers/register"){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const i=await body(req);
       return json(res,201,await registerProductionWorker(i));
     }
@@ -738,7 +865,7 @@ const server = http.createServer(async (req,res) => {
     }
 
     if(req.method==="POST"&&p==="/internal/infrastructure/network-policies"){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       const i=await body(req);
       return json(res,201,await createNetworkPolicy(i));
     }
@@ -779,7 +906,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/internal\/infrastructure\/alerts\/([^/]+)\/resolve$/);
     if(req.method==="POST"&&m){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       return json(res,200,await resolveAlert(m[1]));
     }
 
@@ -1033,7 +1160,7 @@ const server = http.createServer(async (req,res) => {
 
     m=p.match(/^\/internal\/credentials\/([^/]+)\/revoke$/);
     if(req.method==="POST"&&m){
-      assertAdminToken(req.headers["x-razekit-admin-token"]);
+      assertOperator(req.headers, principal);
       return json(res,200,await revokeCredentialReference(m[1]));
     }
 
@@ -1179,9 +1306,26 @@ const server = http.createServer(async (req,res) => {
 
     return json(res,404,{error:"Not found"});
   } catch(e) {
-    return json(res,400,{error:e.message||"Unexpected error"});
+    // Auth failures carry their own status (401, 403, 409, 429); everything
+    // else keeps the engine's established 400.
+    const status = Number.isInteger(e?.status) && e.status >= 400 && e.status < 600 ? e.status : 400;
+    return json(res,status,{error:e.message||"Unexpected error"});
   }
 });
+
+// Cookie-authenticated writes must come from DEV's own pages. SameSite=Lax
+// already keeps the cookie off cross-site POSTs; this refuses any state change
+// whose Origin is not this host or an explicitly allowed one.
+function assertSameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  let host;
+  try { host = new URL(origin).host; } catch { throw new AuthError(403, "Cross-origin request refused"); }
+  if (host === req.headers.host) return;
+  const allowed = String(process.env.RAZEKIT_ALLOWED_ORIGINS || "").split(",").map(item => item.trim()).filter(Boolean);
+  if (allowed.includes(origin)) return;
+  throw new AuthError(403, "Cross-origin request refused");
+}
 
 function getTask(taskId){
   return loadDb().then(db=>{

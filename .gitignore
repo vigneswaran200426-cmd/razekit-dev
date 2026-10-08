@@ -2,3 +2,8 @@ node_modules/
 data/
 .env
 *.log
+
+# Terraform (infra/aws/dev-runtime). State lives in S3; never commit local state.
+*.tfstate
+*.tfstate.*
+.terraform/

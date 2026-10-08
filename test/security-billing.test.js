@@ -14,12 +14,11 @@ const { id, loadDb, transact } = await import("../src/store.js");
 const { TASK_STATUS, AGENT_STATUS } = await import("../src/domain.js");
 const { spawnAgentForTask, startAgent } = await import("../src/agent-manager.js");
 const {
-  principalFromHeaders,
+  resolvePrincipal,
   ensureTenant,
   assertTenantActive,
   assertTaskAccess,
-  writeAudit,
-  issuePrincipalToken
+  writeAudit
 } = await import("../src/tenant-security.js");
 const {
   enforceTenantLimit,
@@ -84,19 +83,27 @@ async function makeTask({ tenantId = "tenant-a", userId = "user-a", budget = 20 
   return { task, agent };
 }
 
-test("signed principal mode rejects forged tenant headers", async () => {
-  const secret = "principal-test-secret";
-  const token = issuePrincipalToken({ tenantId: "signed-tenant", userId: "signed-user", ttlMs: 60_000 }, secret);
+test("session mode ignores tenant headers and requires a session", async () => {
+  // DEV no longer accepts an identity asserted by headers or signed by the
+  // RazeKit marketplace: in session mode a forged tenant header is a 401.
+  const previous = process.env.RAZEKIT_AUTH_MODE;
+  process.env.RAZEKIT_AUTH_MODE = "session";
+  try {
+    await assert.rejects(
+      () => resolvePrincipal({ "x-razekit-tenant-id": "forged-tenant", "x-razekit-user-id": "forged-user" }),
+      (error) => error.status === 401
+    );
+  } finally {
+    if (previous === undefined) delete process.env.RAZEKIT_AUTH_MODE;
+    else process.env.RAZEKIT_AUTH_MODE = previous;
+  }
+});
 
-  process.env.RAZEKIT_REQUIRE_SIGNED_PRINCIPAL = "true";
-  process.env.RAZEKIT_PRINCIPAL_SECRET = secret;
-
-  const principal = principalFromHeaders({
-    "x-razekit-principal": token,
-    "x-razekit-tenant-id": "forged-tenant"
-  });
-  assert.equal(principal.tenantId, "signed-tenant");
-  assert.equal(principal.userId, "signed-user");
+test("local mode reads header identities for development", async () => {
+  const principal = await resolvePrincipal({ "x-razekit-tenant-id": "dev-tenant", "x-razekit-user-id": "dev-user" });
+  assert.equal(principal.tenantId, "dev-tenant");
+  assert.equal(principal.userId, "dev-user");
+  assert.equal(principal.authenticated, false);
   assert.ok(principal.requestId);
 });
 
