@@ -30,7 +30,20 @@ jobs:
         with:
           node-version: 24
 
+      - name: Check whether Groq is configured
+        id: groq-key
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -n "$GROQ_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Set the repository Actions secret GROQ_API_KEY to enable scheduled building."
+          fi
+
       - name: Generate, sandbox-test and submit one DEV improvement
+        if: steps.groq-key.outputs.configured == 'true'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
