@@ -66,7 +66,7 @@ function startWorker(workerId, { leaseMs = 6000, pollMs = 700 } = {}) {
 }
 
 function stop(worker) {
-  if (!worker?.child || worker.child.exitCode !== null) return Promise.resolve();
+  if (!worker?.child || worker.child.exitCode !== null || worker.child.signalCode !== null) return Promise.resolve();
   return new Promise(resolve => {
     worker.child.on("exit", resolve);
     worker.child.kill("SIGKILL");
@@ -125,7 +125,7 @@ function slowCommandNode(key, seconds, extra = {}) {
     payload: {
       id: key,
       kind: "command",
-      executable: process.execPath,
+      executable: "node",
       args: ["-e", "setTimeout(() => process.exit(0), " + (seconds * 1000) + ")"],
       timeoutMs: 60_000
     },

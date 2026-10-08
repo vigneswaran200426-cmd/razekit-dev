@@ -302,8 +302,62 @@ export class PostgresStore {
     }
   }
 
-  /** Creates the meta rows a fresh database needs. */
+  /**
+   * Creates the schema, tables, sequence and indexes if they are not there.
+   *
+   * This is the migration for the state tables, and it is the whole of it: the
+   * structure below is exactly what the dedicated Neon database already holds,
+   * so on that database every statement is a no-op, and on an empty one it
+   * produces the same thing. Nothing here alters or drops anything, so running
+   * it on every boot is safe.
+   *
+   * Transaction-scoped advisory lock: two containers starting together on a
+   * fresh database would otherwise race on CREATE and one would crash. The lock
+   * is transaction-scoped for the same reason as every other lock in this file
+   * (Neon's pooled endpoint does not keep session state).
+   */
+  async ensureSchema() {
+    const pool = await this.getPool();
+    const schema = quoteIdent(this.schema);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock($1, $2)", [LOCK_NAMESPACE, 1]);
+      await client.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+      await client.query(`CREATE SEQUENCE IF NOT EXISTS ${schema}.rk_state_ord_seq`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${this.state} (
+          collection text NOT NULL,
+          id         text NOT NULL,
+          ord        bigint NOT NULL DEFAULT nextval('${this.schema}.rk_state_ord_seq'::regclass),
+          data       jsonb NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (collection, id)
+        )`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${this.meta} (
+          key        text PRIMARY KEY,
+          value      jsonb NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )`);
+      await client.query(`CREATE INDEX IF NOT EXISTS rk_state_collection_ord ON ${this.state} (collection, ord)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS rk_state_tenant ON ${this.state} (collection, (data ->> 'tenantId')) WHERE data ? 'tenantId'`);
+      await client.query(`CREATE INDEX IF NOT EXISTS rk_state_task ON ${this.state} (collection, (data ->> 'taskId')) WHERE data ? 'taskId'`);
+      await client.query(`CREATE INDEX IF NOT EXISTS rk_state_agent ON ${this.state} (collection, (data ->> 'agentInstanceId')) WHERE data ? 'agentInstanceId'`);
+      await client.query(`CREATE INDEX IF NOT EXISTS rk_state_jobs_claimable ON ${this.state} ((data ->> 'status'), (data ->> 'availableAt')) WHERE collection = 'jobs'`);
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS rk_state_jobs_idempotency ON ${this.state} ((data ->> 'agentInstanceId'), (data ->> 'idempotencyKey')) WHERE collection = 'jobs' AND (data ->> 'idempotencyKey') IS NOT NULL`);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Makes sure the structure exists, then creates the meta rows a fresh database needs. */
   async bootstrap() {
+    await this.ensureSchema();
     const pool = await this.getPool();
     await pool.query(
       `INSERT INTO ${this.meta} (key, value)
