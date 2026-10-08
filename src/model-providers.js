@@ -2,13 +2,7 @@ import { MODEL_PROVIDERS } from "./model-runtime.js";
 import { DeterministicFableAdapter, DeterministicAstraAdapter } from "./testing-model-adapters.js";
 import { FableAnthropicAdapter } from "./adapters/fable-anthropic-adapter.js";
 import { AstraOpenAIAdapter } from "./adapters/astra-openai-adapter.js";
-
-// Chooses which Fable and Astra implementations the orchestrator gets.
-//
-// The deterministic adapters are not scaffolding to be replaced — they are how
-// CI exercises the whole loop without a network or a bill, and they stay. This
-// module is the one place that decides which pair is live, so nothing else in
-// the system has to know whether it is talking to a real provider.
+import { GroqOpenAIAdapter } from "./adapters/groq-openai-adapter.js";
 
 export const MODEL_MODE = {
   TEST: "test",
@@ -26,29 +20,50 @@ function requestedMode() {
   return mode;
 }
 
-function realCredentialsPresent() {
+function groqCredentialsPresent() {
+  return Boolean(process.env.GROQ_API_KEY?.trim());
+}
+
+function legacyCredentialsPresent() {
   return Boolean(process.env.FABLE_API_KEY?.trim() && process.env.ASTRA_API_KEY?.trim());
 }
 
+function realCredentialsPresent() {
+  return groqCredentialsPresent() || legacyCredentialsPresent();
+}
+
 /**
- * Registers the Fable and Astra adapters on a registry.
- *
- * Returns what was registered so the caller can log it. The return value names
- * providers and models only — never a key, and never anything derived from one.
+ * Registers a real provider pair or the deterministic test adapters.
+ * Groq uses one key for both roles, so it can run without Claude or OpenAI
+ * credentials. It is preferred when configured; no silent paid-provider
+ * fallback is performed.
  */
 export function configureModelRegistry(registry) {
   const mode = requestedMode();
 
-  // `real` is explicit: if it is asked for and the keys are absent, that is a
-  // misconfigured deployment, not a reason to quietly fall back to adapters
-  // that return canned text and would make a fake task look like a real one.
   if (mode === MODEL_MODE.REAL && !realCredentialsPresent()) {
     throw new Error(
-      "RAZEKIT_MODEL_MODE=real requires both FABLE_API_KEY and ASTRA_API_KEY"
+      "RAZEKIT_MODEL_MODE=real requires GROQ_API_KEY or both FABLE_API_KEY and ASTRA_API_KEY"
     );
   }
 
   const useReal = mode === MODEL_MODE.REAL || (mode === MODEL_MODE.AUTO && realCredentialsPresent());
+
+  if (useReal && groqCredentialsPresent()) {
+    const coder = new GroqOpenAIAdapter({
+      model: process.env.GROQ_CODER_MODEL || process.env.GROQ_MODEL || "openai/gpt-oss-120b"
+    });
+    const planner = new GroqOpenAIAdapter({
+      model: process.env.GROQ_PLANNER_MODEL || process.env.GROQ_MODEL || "openai/gpt-oss-120b"
+    });
+    registry.register(MODEL_PROVIDERS.FABLE, coder);
+    registry.register(MODEL_PROVIDERS.ASTRA, planner);
+    return {
+      mode: MODEL_MODE.REAL,
+      fable: { provider: "groq", model: coder.model },
+      astra: { provider: "groq", model: planner.model }
+    };
+  }
 
   if (useReal) {
     const fable = new FableAnthropicAdapter();
@@ -66,8 +81,6 @@ export function configureModelRegistry(registry) {
     mode === MODEL_MODE.TEST || process.env.RAZEKIT_ENABLE_TEST_MODEL_ADAPTERS === "true";
 
   if (!testAdaptersEnabled) {
-    // Nothing registered. The registry raises MODEL_PROVIDER_NOT_CONFIGURED on
-    // first use, which is the honest failure: no model is configured.
     return { mode: null, fable: null, astra: null };
   }
 
