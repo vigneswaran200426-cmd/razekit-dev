@@ -21,6 +21,12 @@ const DENIED = [
   "src/adapters/groq-openai-adapter.js", "src/budget-manager.js", "src/jev-budget.js"
 ];
 
+const DYNAMIC_SAFE_FILES = [
+  "src/worker-agent.js", "src/production-runtime.js", "src/runtime-coordinator.js",
+  "src/observability.js", "src/app-web-executor.js", "src/game-executor.js",
+  "src/verification.js", "src/dashboard-page.js", "src/server.js", "README.md"
+];
+
 export function isSafeRepoPath(file, patterns = []) {
   const value = String(file || "").replace(/\\/g, "/");
   if (!value || value.startsWith("/") || value.includes("\0")) return false;
@@ -186,12 +192,54 @@ async function ensurePR(summary) {
   });
   log("Created draft PR #" + pr.number + ": " + pr.html_url);
 }
+async function discoverNextTask(existingItems, initialBacklog) {
+  const grep = run("git", [
+    "grep", "-n", "-E",
+    "TODO|not implemented|not configured|placeholder|NOT_STARTED|production deployment still requires|is not implemented",
+    "--", "src", "README.md"
+  ], { allowFailure: true }).stdout.slice(0, 7000);
+  const readme = existsSync(path.join(ROOT, "README.md")) ? readFileSync(path.join(ROOT, "README.md"), "utf8").slice(0, 5000) : "";
+  const system = [
+    "You discover the next small, real missing capability in RazeKit DEV.",
+    "Return JSON only. Do not invent APIs or claim unfinished work is complete.",
+    "Choose one achievable feature evidenced by source or docs, not a UI-only redesign.",
+    "Never choose auth, permissions, secret handling, billing/budgets, model-provider wiring, storage schema, self-builder, CI or deployment config.",
+    "Editable source files are limited to: " + DYNAMIC_SAFE_FILES.join(", ") + " and tests under test/.",
+    "If no suitable incomplete task is evidenced, return {\"done\":true,\"reason\":\"...\"}.",
+    "Otherwise return {\"done\":false,\"id\":\"short-kebab-case\",\"title\":\"...\",\"goal\":\"...\",\"acceptanceCriteria\":[\"...\",\"...\"],\"contextFiles\":[\"permitted source file\", \"optional second permitted source file\"]}."
+  ].join(" ");
+  const user = [
+    "Already completed/queued tasks: " + JSON.stringify(existingItems.map(item => item.id)),
+    "Initial planned tasks: " + JSON.stringify(initialBacklog.map(item => ({ id: item.id, title: item.title }))),
+    "README excerpt:\n" + readme,
+    "Source TODO/placeholder search:\n" + grep,
+    "Possible context files:\n" + DYNAMIC_SAFE_FILES.join("\n")
+  ].join("\n\n");
+  let result;
+  try { result = JSON.parse(await askGroq(system, user, 1000)); }
+  catch { throw new Error("Model failed to return valid JSON for backlog discovery"); }
+  if (result.done === true) return { done: true, reason: String(result.reason || "no task evidence") };
+  const id = String(result.id || "").trim();
+  const title = String(result.title || "").trim();
+  const goal = String(result.goal || "").trim();
+  const criteria = Array.isArray(result.acceptanceCriteria) ? result.acceptanceCriteria.map(String).slice(0, 5) : [];
+  const known = new Set(existingItems.map(item => item.id));
+  if (!/^[a-z0-9][a-z0-9-]{2,48}$/.test(id) || known.has(id)) throw new Error("Discovered task has an invalid or duplicate id");
+  if (!title || title.length > 140 || !goal || goal.length > 1200 || criteria.length < 2) throw new Error("Discovered task is incomplete");
+  const contextFiles = [...new Set((Array.isArray(result.contextFiles) ? result.contextFiles : []).map(String).filter(file => DYNAMIC_SAFE_FILES.includes(file)))].slice(0, 3);
+  if (!contextFiles.length) throw new Error("Discovered task selected no permitted context files");
+  const allowedPaths = [...new Set(contextFiles.filter(file => file !== "README.md").concat(["test/**", "README.md"]))];
+  return { done: false, item: { id, title, goal, acceptanceCriteria: criteria, contextFiles, allowedPaths } };
+}
+
 async function main() {
   if (!GROQ_KEY) throw new Error("Add GROQ_API_KEY under GitHub repository Settings > Secrets and variables > Actions");
   if (!TOKEN) throw new Error("GitHub Actions token is unavailable");
   if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) throw new Error("GITHUB_REPOSITORY is missing");
   const backlog = loadJson(BACKLOG, []);
-  if (!Array.isArray(backlog) || backlog.length === 0) throw new Error(BACKLOG + " must be a non-empty JSON array");
+  const dynamicBacklog = loadJson("self-build/dynamic-backlog.json", []);
+  if (!Array.isArray(backlog) || backlog.length === 0 || !Array.isArray(dynamicBacklog)) throw new Error("Backlog files must be JSON arrays");
+  const tasks = [...backlog, ...dynamicBacklog];
   const prs = await findPRs();
   const open = prs.find(p => p.state === "open") || null;
   if (!open && prs.length) throw new Error("Continuous build PR was closed or merged. Inspect before continuing");
@@ -199,12 +247,23 @@ async function main() {
   await checkoutBranch(open);
   assertClean();
   const progress = loadJson(PROGRESS, { version: 1, nextIndex: 0, completed: [], lastTaskId: null, lastSuccessfulRunAt: null });
-  while (progress.nextIndex < backlog.length && progress.completed.includes(backlog[progress.nextIndex]?.id)) progress.nextIndex++;
-  if (progress.nextIndex >= backlog.length) {
-    log("Initial backlog is complete. Add another scoped item to self-build/backlog.json to continue.");
+  while (progress.nextIndex < tasks.length && progress.completed.includes(tasks[progress.nextIndex]?.id)) progress.nextIndex++;
+  if (progress.nextIndex >= tasks.length) {
+    const discovered = await discoverNextTask(tasks, backlog);
+    if (discovered.done) {
+      log("No safe, evidenced task discovered: " + discovered.reason);
+      return;
+    }
+    dynamicBacklog.push(discovered.item);
+    writeFileSync(path.join(ROOT, "self-build/dynamic-backlog.json"), JSON.stringify(dynamicBacklog, null, 2) + "\n", "utf8");
+    run("git", ["add", "--", "self-build/dynamic-backlog.json"]);
+    run("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "[autobuild] queue task: " + discovered.item.id]);
+    await push();
+    await ensurePR("Queued the next evidence-based improvement: " + discovered.item.title);
+    log("Queued a new, scoped task. It will be implemented during a later scheduled run.");
     return;
   }
-  const task = backlog[progress.nextIndex];
+  const task = tasks[progress.nextIndex];
   if (!task?.id || !task?.title || !task?.goal || !Array.isArray(task.allowedPaths) || !Array.isArray(task.contextFiles)) throw new Error("Malformed backlog entry " + progress.nextIndex);
   log("Working on " + task.id + ": " + task.title);
   const context = contextFor(task);
