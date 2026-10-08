@@ -2,8 +2,8 @@ name: RazeKit DEV Continuous Builder
 
 on:
   schedule:
-    # Conservative cadence for free-tier model usage; can be run manually too.
-    - cron: "17 */4 * * *"
+    # Hourly checks with bounded per-run output to stay within free-tier model limits.
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:
