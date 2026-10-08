@@ -1,0 +1,143 @@
+[
+  {
+    "id": "worker-agent-resilience",
+    "title": "Harden the CPU worker agent reconnect, lease and shutdown behavior",
+    "goal": "Inspect the existing worker client and tests. Improve real gaps in retry/backoff, overlapping polls, lease renewal, configuration validation and graceful shutdown so a long-running CPU worker recovers from transient control-plane failures without claiming work it cannot do.",
+    "acceptanceCriteria": [
+      "Configuration errors are reported clearly before the worker claims jobs.",
+      "Transient HTTP/network errors use bounded backoff and do not start overlapping polls.",
+      "Shutdown stops new claims and uses existing safe release/checkpoint behavior where supported.",
+      "Tests cover changed behavior; existing worker-agent tests remain meaningful."
+    ],
+    "contextFiles": [
+      "src/worker-agent.js",
+      "test/worker-agent.test.js",
+      "src/production-runtime.js",
+      "README.md"
+    ],
+    "allowedPaths": [
+      "src/worker-agent.js",
+      "test/worker-agent.test.js",
+      "README.md"
+    ]
+  },
+  {
+    "id": "runtime-readiness-diagnostics",
+    "title": "Make runtime readiness and worker failures observable",
+    "goal": "Improve the existing observability/runtime-coordinator path so worker readiness, stale heartbeats, coordinator failures and recovery outcomes can be inspected without fake online states. Make one contained change with tests.",
+    "acceptanceCriteria": [
+      "Reported states come from observed values rather than constants.",
+      "New readiness/failure conditions have focused tests.",
+      "Secrets and credentials never appear in diagnostics.",
+      "Existing coordinator and production-infrastructure tests pass."
+    ],
+    "contextFiles": [
+      "src/runtime-coordinator.js",
+      "src/observability.js",
+      "src/production-runtime.js",
+      "test/production-infrastructure.test.js",
+      "test/worker-runtime.test.js"
+    ],
+    "allowedPaths": [
+      "src/runtime-coordinator.js",
+      "src/observability.js",
+      "src/production-runtime.js",
+      "test/production-infrastructure.test.js",
+      "test/worker-runtime.test.js"
+    ]
+  },
+  {
+    "id": "runtime-health-truthfulness",
+    "title": "Expose accurate coordinator readiness in health reporting",
+    "goal": "Inspect the health route and dashboard tests. Ensure health reporting distinguishes the HTTP server being alive from worker execution being ready. Do not redesign the dashboard.",
+    "acceptanceCriteria": [
+      "HTTP liveness stays available when no model provider is configured.",
+      "Readiness reports actual coordinator and runtime configuration without secrets.",
+      "The route never reports execution ready merely because the web process is alive.",
+      "Tests cover configured and unconfigured states."
+    ],
+    "contextFiles": [
+      "src/server.js",
+      "src/runtime-coordinator.js",
+      "test/dashboard.test.js",
+      "test/dashboard-page.test.js"
+    ],
+    "allowedPaths": [
+      "src/server.js",
+      "test/dashboard.test.js",
+      "test/dashboard-page.test.js",
+      "README.md"
+    ]
+  },
+  {
+    "id": "execution-failure-recovery",
+    "title": "Improve build-step failure recovery and actionable diagnostics",
+    "goal": "Review the existing app/web execution engine, worker checkpoints and executor tests. Make one contained improvement so failed or timed-out build steps are recorded with redacted diagnostics and can be safely retried or blocked without falsely claiming completion.",
+    "acceptanceCriteria": [
+      "A failed or timed-out step never satisfies successful acceptance criteria.",
+      "Recovery is bounded and does not duplicate a claimed step.",
+      "Diagnostics exclude tokens, passwords, secret values and environment dumps.",
+      "Tests cover the changed failure/recovery behavior."
+    ],
+    "contextFiles": [
+      "src/app-web-executor.js",
+      "src/execution-engine.js",
+      "src/reliability.js",
+      "test/app-web-executor.test.js",
+      "test/execution-engine.test.js"
+    ],
+    "allowedPaths": [
+      "src/app-web-executor.js",
+      "src/execution-engine.js",
+      "src/reliability.js",
+      "test/app-web-executor.test.js",
+      "test/execution-engine.test.js"
+    ]
+  },
+  {
+    "id": "game-execution-verification",
+    "title": "Tighten game execution result and verification evidence",
+    "goal": "Inspect the existing Konami/game executor and verification contract. Prevent missing engine/build/playtest adapters or incomplete outputs from being reported as successful completion.",
+    "acceptanceCriteria": [
+      "Missing engine-specific runtime support is reported unavailable, not successful.",
+      "Verification relies on recorded execution evidence.",
+      "Failure reasons are actionable and sanitized.",
+      "Existing game executor and verification tests pass."
+    ],
+    "contextFiles": [
+      "src/game-executor.js",
+      "src/verification.js",
+      "src/game-domain.js",
+      "test/game-executor.test.js"
+    ],
+    "allowedPaths": [
+      "src/game-executor.js",
+      "src/verification.js",
+      "test/game-executor.test.js"
+    ]
+  },
+  {
+    "id": "model-rate-limit-recovery",
+    "title": "Improve model rate-limit recovery without paid fallback",
+    "goal": "Inspect model orchestration and model-node execution to improve how HTTP 429/provider transient errors are recorded and delayed. Do not change provider keys, model IDs, budget arithmetic or the model-provider registry.",
+    "acceptanceCriteria": [
+      "Rate-limit failures are identifiable and not retried in a tight loop.",
+      "Retry/backoff stays inside configured attempt limits.",
+      "Provider errors do not leak keys or response bodies.",
+      "Tests cover retryable and non-retryable provider errors."
+    ],
+    "contextFiles": [
+      "src/model-orchestrator.js",
+      "src/jev-model-executor.js",
+      "src/model-runtime.js",
+      "test/model-orchestrator.test.js",
+      "test/jev-model-nodes.test.js"
+    ],
+    "allowedPaths": [
+      "src/model-orchestrator.js",
+      "src/jev-model-executor.js",
+      "test/model-orchestrator.test.js",
+      "test/jev-model-nodes.test.js"
+    ]
+  }
+]
