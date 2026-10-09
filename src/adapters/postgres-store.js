@@ -75,7 +75,14 @@ export class PostgresStore {
       max: Number(process.env.RAZEKIT_DB_POOL_MAX || 10),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: Number(process.env.RAZEKIT_DB_CONNECT_TIMEOUT_MS || 15_000),
+      // A connection the network dropped silently must fail, not wait forever:
+      // a long-running process would otherwise hang with no error to act on.
+      keepAlive: true,
+      query_timeout: Number(process.env.RAZEKIT_DB_QUERY_TIMEOUT_MS || 60_000),
     });
+    // An idle client that errors (server restart, network loss) is discarded
+    // by the pool; without a listener that error would crash the process.
+    this.pool.on("error", () => {});
     return this.pool;
   }
 

@@ -1,0 +1,8 @@
+{
+  "BudgetName": "razekit-dev-monthly",
+  "BudgetType": "COST",
+  "TimeUnit": "MONTHLY",
+  "BudgetLimit": { "Amount": "BUDGET_USD", "Unit": "USD" },
+  "CostFilters": {},
+  "CostTypes": { "IncludeCredit": false, "IncludeRefund": false, "IncludeTax": true, "IncludeSubscription": true, "UseBlended": false }
+}

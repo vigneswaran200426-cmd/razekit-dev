@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DescribeInstances",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    },
+    {
+      "Sid": "StartStopOnlyTheGpuInferenceInstance",
+      "Effect": "Allow",
+      "Action": ["ec2:StartInstances", "ec2:StopInstances"],
+      "Resource": "arn:aws:ec2:us-east-2:${AWS_ACCOUNT_ID}:instance/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/razekit:role": "gpu-inference" } }
+    },
+    {
+      "Sid": "ReadTheDevBudget",
+      "Effect": "Allow",
+      "Action": "budgets:ViewBudget",
+      "Resource": "arn:aws:budgets::${AWS_ACCOUNT_ID}:budget/razekit-dev-monthly"
+    },
+    {
+      "Sid": "EmailOnlyFromTheVerifiedSender",
+      "Effect": "Allow",
+      "Action": "ses:SendEmail",
+      "Resource": "arn:aws:ses:us-east-2:${AWS_ACCOUNT_ID}:identity/*"
+    }
+  ]
+}
