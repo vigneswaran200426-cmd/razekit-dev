@@ -3,6 +3,8 @@ import { recoverExpiredJobs, recoverExpiredWorkers } from "./reliability.js";
 import { recoverProductionAssignments } from "./production-runtime.js";
 import { evaluateInfrastructureAlerts, recordObservabilityEvent } from "./observability.js";
 import { advanceAllAgents } from "./autonomous-loop.js";
+import { applyAgentControlRequests, emergencyState, getAgentControls } from "./ops-state.js";
+import os from "node:os";
 
 export class RuntimeCoordinator {
   constructor({
@@ -18,6 +20,7 @@ export class RuntimeCoordinator {
     this.orchestrator = orchestrator;
     this.timer = null;
     this.running = false;
+    this.processId = "coordinator-" + os.hostname() + "-" + process.pid;
   }
 
   async tick() {
@@ -26,9 +29,20 @@ export class RuntimeCoordinator {
       const jobRecovery = await recoverExpiredJobs();
       const productionRecovery = await recoverProductionAssignments();
       const alerts = await evaluateInfrastructureAlerts();
-      const agents = await processReadyTasks();
+      // Admin pause/resume for Niomi and Konami, and the emergency stop, are
+      // applied here because this is the process that advances them: a paused
+      // agent type is neither started nor advanced, and the request is only
+      // marked completed by this code, after the mode is in force.
+      await applyAgentControlRequests(this.processId);
+      const emergency = await emergencyState();
+      const controls = await getAgentControls();
+      const skipAgentTypes = Object.values(controls).filter(item => item.mode === "paused").map(item => item.id);
+      if (emergency.engaged) {
+        return { ok: true, haltedByEmergencyStop: true, recoveredWorkers: workerRecovery.length, recoveredJobs: jobRecovery.length };
+      }
+      const agents = await processReadyTasks({ skipAgentTypes });
       const advanced = this.orchestrator
-        ? await advanceAllAgents({ orchestrator: this.orchestrator })
+        ? await advanceAllAgents({ orchestrator: this.orchestrator, skipAgentTypes })
         : [];
       return {
         ok: true,

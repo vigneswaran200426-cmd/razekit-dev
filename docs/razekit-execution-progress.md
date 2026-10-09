@@ -116,6 +116,19 @@ phase by phase.
   tests and by single-process deployments; the worker is the alternative, not
   yet the only way.
 
+## 24/7 systems and Admin Control Center (2026-10-09, branch `feat/ops-24x7-control-center`)
+
+| Item | State | Evidence |
+|---|---|---|
+| System A / System B supervisor runtime (separate processes, leases, controls, checkpoints, retries, timeouts, emergency stop, isolation) | VERIFIED (JSON store, in-process) / TESTED (Postgres, multi-process — see PR) | `test/ops-supervisor.test.js`, `test/admin-ops-api.test.js` |
+| System A real tools (git clone, npm test, scoped edits, commit; draft PR gated on token) | VERIFIED locally | `test/ops-builder-auditor.test.js` |
+| System B audit, repairs, findings, engineering tasks for System A | VERIFIED locally | same file |
+| Inference gateway (queue, one model loaded, usage, budgets, GPU idle/budget stop) | TESTED against an Ollama-API test double only | `test/inference-gateway.test.js` |
+| Real local inference with `qwen3-coder:30b` / `gpt-oss:20b` | BLOCKED_EXTERNAL | GPU vCPU quota 0 in us-east-2; AWS Free plan |
+| Browser tool (Playwright, URL policy, IMDS/private blocked, audited) | VERIFIED locally with real Chrome | `test/ops-browser.test.js` |
+| Admin Control Center `/admin/24-7` | VERIFIED locally (HTTP + real supervisor loops) | `test/admin-ops-api.test.js` |
+| AWS control plane | DESIGNED, not applied | `infra/aws/control-plane/README.md` |
+
 ## Next exact action
 
 Phase 13b — replan. Generalise `nextModelGraphAction`'s cycle derivation from

@@ -135,8 +135,8 @@ async function safeErrorCode(response) {
   }
 }
 
-function shapeResponse(role, text) {
-  const parsed = extractJsonObject(text, { what: "Groq " + role + " response" });
+export function shapeResponse(role, text) {
+  const parsed = extractJsonObject(text, { what: role + " model response" });
 
   if (role === MODEL_ROLES.IMPLEMENTER) {
     return {

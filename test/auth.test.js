@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 // DEV's own accounts, end to end. The unit half exercises the module; the HTTP
@@ -75,7 +75,7 @@ test("bootstrap needs the configured token and an empty deployment", async () =>
   const script = `
     process.env.RAZEKIT_DATA_DIR = ${JSON.stringify(fresh)};
     process.env.RAZEKIT_BOOTSTRAP_TOKEN = "b".repeat(32);
-    const auth = await import(${JSON.stringify(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "auth.js"))});
+    const auth = await import(${JSON.stringify(pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "auth.js")).href)});
     const out = {};
     try { await auth.bootstrapOwner({ token: "wrong".repeat(7), email: "o@example.com", password: ${JSON.stringify(PASSWORD)} }); } catch (e) { out.wrong = e.status; }
     out.owner = (await auth.bootstrapOwner({ token: "b".repeat(32), email: "o@example.com", password: ${JSON.stringify(PASSWORD)} })).role;
