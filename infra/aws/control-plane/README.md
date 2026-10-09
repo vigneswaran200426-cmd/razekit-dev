@@ -100,9 +100,10 @@ aws budgets create-budget --account-id 074189217970 --budget file:///tmp/budget.
 
 # 1. Role + instance profile for the control plane (policy above, account id substituted).
 # 2. Security group razekit-dev-control-plane: no inbound; egress 443, 5432 (Neon), 11434 to the GPU SG.
-# 3. Launch t3.small (AL2023) with control-plane-user-data.sh, IMDSv2 required, hop limit 1, encrypted root.
-# 4. Fill /etc/razekit/{builder,auditor,gateway}.env (Session Manager), then:
-#    systemctl start razekit-builder razekit-auditor razekit-gateway
+# 3. Launch t3.small (Ubuntu 24.04) with control-plane-user-data.sh (REPO_REF, ADMIN_EMAIL prepended),
+#    IMDSv2 required, hop limit 1, encrypted root, AmazonSSMManagedInstanceCore on the role.
+# 4. Session Manager -> sudo bash /opt/razekit-dev/infra/aws/control-plane/configure.sh
+#    (prompts for the Neon URL and the GitHub token without echo, then starts the services)
 # 5. After the quota is granted: launch the GPU instance (DLAMI, g6.xlarge, tag razekit:role=gpu-inference,
 #    150 GB encrypted gp3, gpu-user-data.sh), SG razekit-dev-gpu admitting 11434 from the control-plane SG only,
 #    then stop it; set RAZEKIT_GPU_INSTANCE_ID and RAZEKIT_OLLAMA_URL on the gateway.

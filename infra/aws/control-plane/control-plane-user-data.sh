@@ -1,5 +1,5 @@
 #!/bin/bash
-# RazeKit DEV control plane — EC2 user data (Amazon Linux 2023, x86_64).
+# RazeKit DEV control plane — EC2 user data (Ubuntu 24.04 LTS, x86_64).
 #
 # One small CPU instance that runs, as three separate systemd services under
 # three separate Unix users:
@@ -8,60 +8,78 @@
 #   razekit-gateway   the shared inference gateway (and GPU start/stop)
 #
 # Each has its own environment file (0600, owned by that user), its own
-# workspace and its own log. Secrets are written to the env files by an
-# operator after boot (see README.md), never baked into user data.
-set -euo pipefail
+# workspace and its own log. Secrets are written by the operator after boot
+# with configure.sh (Session Manager), never baked into user data.
+#
+# System A is deliberately NOT in the docker group: that group is root on the
+# host. Builds run as its own hardened user (see the systemd unit); a
+# container sandbox needs rootless Docker, which is a later step.
+set -uo pipefail
+exec > >(tee -a /var/log/razekit-bootstrap.log) 2>&1
 
 REPO_URL="${REPO_URL:-https://github.com/vigneswaran200426-cmd/razekit-dev.git}"
 REPO_REF="${REPO_REF:-main}"
+NODE_VERSION="${NODE_VERSION:-v22.12.0}"
 APP=/opt/razekit-dev
 STATE=/var/lib/razekit
+export DEBIAN_FRONTEND=noninteractive
 
-dnf -y update
-dnf -y install git docker python3 python3-pip iptables-nft tar gzip
-# Node.js 22 LTS from the distribution.
-dnf -y install nodejs22 nodejs22-npm || dnf -y install nodejs npm
-command -v node || ln -s "$(command -v node-22)" /usr/local/bin/node
-command -v npm || ln -s "$(command -v npm-22)" /usr/local/bin/npm
+echo "== razekit bootstrap $(date -u +%FT%TZ) ref=$REPO_REF"
 
-systemctl enable --now docker
+# 2 GB of swap: a t3.small has 2 GB of memory and the test suite plus
+# Chromium can briefly exceed it.
+if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi
+
+apt-get update -y
+apt-get install -y git python3 python3-pip ca-certificates curl xz-utils iptables-persistent
+
+# Node.js 22 LTS from nodejs.org, checksum-verified.
+cd /tmp
+curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz"
+curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt"
+grep " node-${NODE_VERSION}-linux-x64.tar.xz\$" SHASUMS256.txt | sha256sum -c - || { echo "Node checksum mismatch"; exit 1; }
+tar -xJf "node-${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1
+node --version && npm --version
 
 for user in razekit-builder razekit-auditor razekit-gateway; do
-  id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$STATE/${user#razekit-}" --shell /sbin/nologin "$user"
-  install -d -m 0700 -o "$user" -g "$user" "$STATE/${user#razekit-}" "$STATE/${user#razekit-}/workspaces" "$STATE/${user#razekit-}/logs"
+  name="${user#razekit-}"
+  id "$user" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$STATE/$name" --shell /usr/sbin/nologin "$user"
+  install -d -m 0700 -o "$user" -g "$user" "$STATE/$name" "$STATE/$name/workspaces" "$STATE/$name/logs"
 done
-# The builder runs builds and browser checks in restricted containers.
-usermod -aG docker razekit-builder
 
+rm -rf "$APP"
 git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$APP"
 cd "$APP"
 npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
-chmod -R a+rX "$APP"
-
-# Browser sandbox image: Playwright's Chromium in a container with no host
-# network access beyond the egress rules below.
-docker pull mcr.microsoft.com/playwright:v1.55.1-noble || true
+# Chromium for the browser tool, in a shared read-only location.
+export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+npx --yes playwright@1.55.1 install --with-deps chromium || echo "WARN: Playwright Chromium install failed"
+chmod -R a+rX "$APP" /opt/ms-playwright 2>/dev/null || true
 
 install -d -m 0755 /etc/razekit
 for name in builder auditor gateway; do
   f="/etc/razekit/$name.env"
   [ -f "$f" ] || install -m 0600 -o "razekit-$name" -g "razekit-$name" "$APP/infra/aws/control-plane/env/$name.env.example" "$f"
 done
+CHROME=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)
+if [ -n "$CHROME" ] && ! grep -q '^RAZEKIT_BROWSER_EXECUTABLE=' /etc/razekit/builder.env; then echo "RAZEKIT_BROWSER_EXECUTABLE=$CHROME" >> /etc/razekit/builder.env; fi
+# The administrator address is not a secret; it is passed in at launch.
+if [ -n "${ADMIN_EMAIL:-}" ]; then sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=${ADMIN_EMAIL}|" /etc/razekit/auditor.env; fi
 
 # ── Egress restrictions ─────────────────────────────────────────────────────
 # Instance metadata (and so the instance role) is reachable only by the
-# gateway user; the builder, the auditor and every container are refused.
+# gateway user; the builder and the auditor are refused.
 iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner razekit-builder -j REJECT
 iptables -I OUTPUT -d 169.254.169.254 -m owner --uid-owner razekit-auditor -j REJECT
-iptables -I DOCKER-USER -d 169.254.169.254 -j REJECT || true
-# Containers may not reach private networks (VPC, other instances, the model
-# server); they get the public internet only.
-for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
-  iptables -I DOCKER-USER -d "$net" -j REJECT || true
+# The builder (which runs model-written code and the browser) may not reach
+# private networks either: no VPC neighbours, no model server.
+for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+  iptables -I OUTPUT -d "$net" -m owner --uid-owner razekit-builder -j REJECT
 done
-dnf -y install iptables-services && iptables-save > /etc/sysconfig/iptables && systemctl enable iptables
+netfilter-persistent save || true
 
 install -m 0644 "$APP"/infra/aws/control-plane/systemd/razekit-*.service /etc/systemd/system/
 systemctl daemon-reload
-# Services start once their env files have been filled in (README step 4).
+# Services are enabled; they start after configure.sh has written the secrets.
 systemctl enable razekit-builder razekit-auditor razekit-gateway
+echo "== razekit bootstrap finished $(date -u +%FT%TZ). Next: sudo bash $APP/infra/aws/control-plane/configure.sh"
