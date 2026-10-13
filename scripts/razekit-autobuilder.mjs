@@ -37,7 +37,7 @@ export function providerConfig(env = process.env) {
     return { name: "groq", url: "https://api.groq.com/openai/v1/chat/completions", model: env.GROQ_MODEL || "openai/gpt-oss-120b", key: env.GROQ_API_KEY, headers: {}, extra: { reasoning_effort: "low" } };
   }
   if (env.RAZEKIT_AUTOBUILD_PROVIDER === "github-models" && env.GITHUB_TOKEN) {
-    return { name: "github-models", url: "https://models.github.ai/inference/chat/completions", model: env.GITHUB_MODELS_MODEL || "openai/gpt-4.1", key: env.GITHUB_TOKEN, headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }, extra: {} };
+    return { name: "github-models", url: "https://models.github.ai/inference/chat/completions", model: env.GITHUB_MODELS_MODEL || "openai/gpt-4.1", key: env.GITHUB_TOKEN, headers: { accept: "application/vnd.github+json", "x-github-api-version": env.GITHUB_MODELS_API_VERSION || "2026-03-10" }, extra: {} };
   }
   return { name: "none" };
 }
@@ -115,7 +115,10 @@ async function askModel(system, user, maxTokens = 2800) {
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); }
-  catch { throw new Error(PROVIDER.name + " answered HTTP " + r.status + " " + (r.headers.get("content-type") || "no content-type") + " with a non-JSON body: " + JSON.stringify(text.slice(0, 200))); }
+  catch {
+    const where = r.redirected ? " after a redirect to " + new URL(r.url).origin + new URL(r.url).pathname : "";
+    throw new Error(PROVIDER.name + " answered HTTP " + r.status + " " + (r.headers.get("content-type") || "no content-type") + where + " with a non-JSON body: " + JSON.stringify(text.slice(0, 200)));
+  }
   const choice = data.choices?.[0];
   if (!choice || choice.finish_reason === "length") throw new Error(PROVIDER.name + " response was missing or truncated");
   if (data.usage) log("Model " + PROVIDER.name + "/" + PROVIDER.model + " usage: " + (data.usage.prompt_tokens ?? "?") + " in, " + (data.usage.completion_tokens ?? "?") + " out");
