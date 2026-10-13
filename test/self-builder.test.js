@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isSafeRepoPath, parseModelPatch } from "../scripts/razekit-autobuilder.mjs";
+import { isSafeRepoPath, parseModelPatch, providerConfig } from "../scripts/razekit-autobuilder.mjs";
 
 test("path policy allows only explicitly permitted files and blocks sensitive paths", () => {
   assert.equal(isSafeRepoPath("src/worker-agent.js", ["src/worker-agent.js"]), true);
@@ -24,4 +24,15 @@ test("model response parser requires a summary and non-empty patch", () => {
   assert.match(got.patch, /^diff --git/);
   assert.throws(() => parseModelPatch(JSON.stringify({ summary: "No patch", patch: "" })), /non-empty/);
   assert.throws(() => parseModelPatch("not json"), /JSON/);
+});
+
+test("provider: Groq when its key is set, GitHub Models only when chosen, never anything else", () => {
+  assert.equal(providerConfig({ GROQ_API_KEY: "k", GITHUB_TOKEN: "t", RAZEKIT_AUTOBUILD_PROVIDER: "github-models" }).name, "groq");
+  const gm = providerConfig({ GITHUB_TOKEN: "t", RAZEKIT_AUTOBUILD_PROVIDER: "github-models" });
+  assert.equal(gm.name, "github-models");
+  assert.equal(gm.url, "https://models.github.ai/inference/chat/completions");
+  assert.deepEqual(gm.extra, {}, "no Groq-only parameters are sent to GitHub Models");
+  assert.equal(providerConfig({ GITHUB_TOKEN: "t" }).name, "none", "GitHub Models is used only when the workflow selects it");
+  assert.equal(providerConfig({ RAZEKIT_AUTOBUILD_PROVIDER: "github-models" }).name, "none", "no token, no provider");
+  assert.equal(providerConfig({}).name, "none");
 });

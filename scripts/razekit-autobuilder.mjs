@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = process.cwd();
 const REPO = process.env.GITHUB_REPOSITORY || "";
 const TOKEN = process.env.GITHUB_TOKEN || "";
-const GROQ_KEY = process.env.GROQ_API_KEY || "";
-const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+const PROVIDER = providerConfig(process.env);
 const BRANCH = "autobuild/razekit-dev-continuous";
 const PR_TITLE = "RazeKit DEV Continuous Self-Build (review required)";
 const BACKLOG = "self-build/backlog.json";
@@ -26,6 +25,22 @@ const DYNAMIC_SAFE_FILES = [
   "src/observability.js", "src/app-web-executor.js", "src/game-executor.js",
   "src/verification.js", "src/dashboard-page.js", "src/server.js", "README.md"
 ];
+
+/**
+ * Which model provider this run uses. Groq when its key is configured;
+ * otherwise GitHub Models, reached with the workflow's own GITHUB_TOKEN
+ * (permission `models: read`) at no cost within its free rate limits. Never a
+ * paid provider, and never a fallback from one provider to the other mid-run.
+ */
+export function providerConfig(env = process.env) {
+  if (env.GROQ_API_KEY) {
+    return { name: "groq", url: "https://api.groq.com/openai/v1/chat/completions", model: env.GROQ_MODEL || "openai/gpt-oss-120b", key: env.GROQ_API_KEY, extra: { reasoning_effort: "low" } };
+  }
+  if (env.RAZEKIT_AUTOBUILD_PROVIDER === "github-models" && env.GITHUB_TOKEN) {
+    return { name: "github-models", url: "https://models.github.ai/inference/chat/completions", model: env.GITHUB_MODELS_MODEL || "openai/gpt-4.1", key: env.GITHUB_TOKEN, extra: {} };
+  }
+  return { name: "none" };
+}
 
 export function isSafeRepoPath(file, patterns = []) {
   const value = String(file || "").replace(/\\/g, "/");
@@ -78,14 +93,14 @@ async function gh(p, options = {}) {
   if (!r.ok) throw new Error("GitHub API HTTP " + r.status + ": " + String(data.message || "request failed"));
   return data;
 }
-async function askGroq(system, user, maxTokens = 2800) {
-  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+async function askModel(system, user, maxTokens = 2800) {
+  const r = await fetch(PROVIDER.url, {
     method: "POST",
-    headers: { authorization: "Bearer " + GROQ_KEY, "content-type": "application/json" },
+    headers: { authorization: "Bearer " + PROVIDER.key, "content-type": "application/json" },
     body: JSON.stringify({
-      model: MODEL,
+      model: PROVIDER.model,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      max_tokens: maxTokens, response_format: { type: "json_object" }, reasoning_effort: "low"
+      max_tokens: maxTokens, response_format: { type: "json_object" }, ...PROVIDER.extra
     }),
     signal: AbortSignal.timeout(150000)
   });
@@ -93,11 +108,12 @@ async function askGroq(system, user, maxTokens = 2800) {
     let code = "unspecified";
     try { const e = await r.json(); code = e?.error?.code || e?.error?.type || code; } catch {}
     const retry = r.headers.get("retry-after");
-    throw new Error("Groq HTTP " + r.status + " (" + code + ")" + (retry ? "; retry-after=" + retry + "s" : "") + "; paid fallback disabled");
+    throw new Error(PROVIDER.name + " HTTP " + r.status + " (" + code + ")" + (retry ? "; retry-after=" + retry + "s" : "") + "; paid fallback disabled");
   }
   const data = await r.json();
   const choice = data.choices?.[0];
-  if (!choice || choice.finish_reason === "length") throw new Error("Groq response was missing or truncated");
+  if (!choice || choice.finish_reason === "length") throw new Error(PROVIDER.name + " response was missing or truncated");
+  if (data.usage) log("Model " + PROVIDER.name + "/" + PROVIDER.model + " usage: " + (data.usage.prompt_tokens ?? "?") + " in, " + (data.usage.completion_tokens ?? "?") + " out");
   return String(choice.message?.content || "");
 }
 async function findPRs() {
@@ -170,21 +186,24 @@ function sandboxTests() {
     "run", "--rm", "--network", "none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
     "--pids-limit=256", "--memory=2g", "--cpus=2", "--user", uid + ":" + gid,
     "--tmpfs", "/tmp:rw,noexec,nosuid,size=512m,uid=" + uid + ",gid=" + gid,
-    "--volume", ROOT + ":/work", "--workdir", "/work",
+    // .git read-only: the candidate cannot plant a hook that git would run on
+    // the host at push time, where the token is in reach.
+    "--volume", ROOT + ":/work", "--volume", path.join(ROOT, ".git") + ":/work/.git:ro", "--workdir", "/work",
     "--env", "CI=true", "--env", "RAZEKIT_MODEL_MODE=test",
     "node:24-bookworm-slim", "npm", "test"
   ], { timeout: 240000, env: testEnv() });
 }
 async function push() {
   const auth = Buffer.from("x-access-token:" + TOKEN).toString("base64");
-  run("git", ["-c", "http.extraheader=AUTHORIZATION: basic " + auth, "push", "origin", "HEAD:refs/heads/" + BRANCH], { timeout: 120000 });
+  run("git", ["-c", "core.hooksPath=/dev/null", "-c", "http.extraheader=AUTHORIZATION: basic " + auth, "push", "origin", "HEAD:refs/heads/" + BRANCH], { timeout: 120000 });
 }
 async function ensurePR(summary) {
   const prs = await findPRs();
   const open = prs.find(p => p.state === "open");
   if (open) { log("Updated draft PR #" + open.number); return; }
   if (prs.length) throw new Error("The continuous self-build PR was closed or merged; inspect it before continuing");
-  const body = "Draft PR updated by the scheduled RazeKit DEV builder using Groq.\n\nLatest increment: " + summary +
+  const body = "Draft PR updated by the scheduled RazeKit DEV builder (GitHub Actions, " + PROVIDER.name + " / " + PROVIDER.model + "). " +
+    "This is a scheduled job, not a persistent 24/7 worker.\n\nLatest increment: " + summary +
     "\n\nSafety: dedicated autobuild branch; no auto-merge/deploy; tests run in a network-isolated container without API credentials; no paid-provider fallback.";
   const pr = await gh("/repos/" + REPO + "/pulls", {
     method: "POST",
@@ -216,7 +235,7 @@ async function discoverNextTask(existingItems, initialBacklog) {
     "Possible context files:\n" + DYNAMIC_SAFE_FILES.join("\n")
   ].join("\n\n");
   let result;
-  try { result = JSON.parse(await askGroq(system, user, 1000)); }
+  try { result = JSON.parse(await askModel(system, user, 1000)); }
   catch { throw new Error("Model failed to return valid JSON for backlog discovery"); }
   if (result.done === true) return { done: true, reason: String(result.reason || "no task evidence") };
   const id = String(result.id || "").trim();
@@ -233,7 +252,8 @@ async function discoverNextTask(existingItems, initialBacklog) {
 }
 
 async function main() {
-  if (!GROQ_KEY) throw new Error("Add GROQ_API_KEY under GitHub repository Settings > Secrets and variables > Actions");
+  if (PROVIDER.name === "none") throw new Error("No model provider: add GROQ_API_KEY under Settings > Secrets and variables > Actions, or enable GitHub Models (RAZEKIT_AUTOBUILD_PROVIDER=github-models with permission models: read)");
+  log("Provider: " + PROVIDER.name + " / " + PROVIDER.model);
   if (!TOKEN) throw new Error("GitHub Actions token is unavailable");
   if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) throw new Error("GITHUB_REPOSITORY is missing");
   const backlog = loadJson(BACKLOG, []);
@@ -257,7 +277,7 @@ async function main() {
     dynamicBacklog.push(discovered.item);
     writeFileSync(path.join(ROOT, "self-build/dynamic-backlog.json"), JSON.stringify(dynamicBacklog, null, 2) + "\n", "utf8");
     run("git", ["add", "--", "self-build/dynamic-backlog.json"]);
-    run("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "[autobuild] queue task: " + discovered.item.id]);
+    run("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=razekit-dev-autobuilder[bot]", "-c", "user.email=autobuilder@users.noreply.github.com", "-c", "commit.gpgsign=false", "commit", "-m", "[autobuild] queue task: " + discovered.item.id]);
     await push();
     await ensurePR("Queued the next evidence-based improvement: " + discovered.item.title);
     log("Queued a new, scoped task. It will be implemented during a later scheduled run.");
@@ -286,7 +306,7 @@ async function main() {
   ].join("\n\n");
   const temp = mkdtempSync(path.join(os.tmpdir(), "rk-autobuild-"));
   try {
-    const output = parseModelPatch(await askGroq(system, user));
+    const output = parseModelPatch(await askModel(system, user));
     if (output.summary.startsWith("BLOCKED")) { log("Blocked: " + output.summary); return; }
     validatePatch(output.patch, task.allowedPaths);
     const patchFile = path.join(temp, "candidate.patch");
@@ -304,7 +324,7 @@ async function main() {
     progress.lastSuccessfulRunAt = new Date().toISOString();
     writeFileSync(path.join(ROOT, PROGRESS), JSON.stringify(progress, null, 2) + "\n", "utf8");
     run("git", ["add", "--", ...changed, PROGRESS]);
-    run("git", ["-c", "core.hooksPath=/dev/null", "commit", "-m", "[autobuild] " + task.id + ": " + task.title]);
+    run("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.name=razekit-dev-autobuilder[bot]", "-c", "user.email=autobuilder@users.noreply.github.com", "-c", "commit.gpgsign=false", "commit", "-m", "[autobuild] " + task.id + ": " + task.title]);
     await push();
     await ensurePR(output.summary);
     log("Task passed tests and was added to the draft PR. Main was not pushed or deployed.");

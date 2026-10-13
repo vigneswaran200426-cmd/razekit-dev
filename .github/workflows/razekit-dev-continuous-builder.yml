@@ -1,5 +1,9 @@
 name: RazeKit DEV Continuous Builder
 
+# A scheduled GitHub Actions job, not a persistent 24/7 worker: each run makes
+# at most one bounded increment and exits. The persistent builder is System A
+# (src/ops-supervisor.js --system=builder) on the control plane.
+
 on:
   schedule:
     # Hourly checks with bounded per-run output to stay within free-tier model limits.
@@ -9,6 +13,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # GitHub Models through the workflow's own token: the no-cost provider used
+  # when GROQ_API_KEY is not configured.
+  models: read
 
 concurrency:
   group: razekit-dev-continuous-builder
@@ -30,23 +37,30 @@ jobs:
         with:
           node-version: 24
 
-      - name: Check whether Groq is configured
-        id: groq-key
+      - name: Choose the model provider
+        id: provider
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
           if [ -n "$GROQ_API_KEY" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "name=groq" >> "$GITHUB_OUTPUT"
+            echo "Provider: Groq (GROQ_API_KEY is configured)." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Set the repository Actions secret GROQ_API_KEY to enable scheduled building."
+            echo "name=github-models" >> "$GITHUB_OUTPUT"
+            echo "Provider: GitHub Models via the workflow token (GROQ_API_KEY is not configured)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Generate, sandbox-test and submit one DEV improvement
-        if: steps.groq-key.outputs.configured == 'true'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GROQ_MODEL: openai/gpt-oss-120b
-        run: node scripts/razekit-autobuilder.mjs
+          RAZEKIT_AUTOBUILD_PROVIDER: ${{ steps.provider.outputs.name }}
+          GITHUB_MODELS_MODEL: openai/gpt-4.1
+        run: |
+          set -o pipefail
+          node scripts/razekit-autobuilder.mjs 2>&1 | tee autobuild.log
+          status=${PIPESTATUS[0]}
+          { echo; echo '```'; grep '^\[razekit-autobuilder\]' autobuild.log | tail -20; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
