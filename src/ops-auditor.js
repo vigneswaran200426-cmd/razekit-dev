@@ -12,6 +12,7 @@ import {
 import {
   enqueueTask,
   getGpuState,
+  getModelConfig,
   pushEvent,
   requeueStuckInference,
   resolveMissingFindings,
@@ -171,6 +172,27 @@ export async function runAudit(ctx) {
   checks.host = await hostResources(env);
   const gpu = await getGpuState();
   checks.spend = { gpu: gpuCostSoFar(gpu, gatewayConfig(env), now) };
+  // Configured models the reachable model server does not have.
+  const modelConfig = await getModelConfig();
+  const modelStatus = db.opsModelStatus.find(item => item.id === "gateway-models") || null;
+  checks.models = {
+    serverReachable: modelStatus?.reachable ?? null,
+    missing: modelStatus?.reachable
+      ? Object.entries(modelConfig.slots).filter(([, slot]) => modelStatus.models?.[slot.model]?.installed === false).map(([name, slot]) => ({ slot: name, model: slot.model }))
+      : []
+  };
+  // Requesters at or over today's token budget (the gateway refuses them).
+  const today = new Date(now).toISOString().slice(0, 10);
+  const budgets = gatewayConfig(env).dailyTokenBudget;
+  const usedToday = {};
+  for (const row of db.opsModelUsage.filter(item => item.day === today)) {
+    usedToday[row.requester] = (usedToday[row.requester] || 0) + row.promptTokens + row.completionTokens;
+  }
+  checks.quota = Object.entries(budgets).filter(([, limit]) => limit > 0).map(([requester, limit]) => ({ requester, used: usedToday[requester] || 0, limit }));
+  // GPU stops the gateway made since the previous audit.
+  const since = now - 2 * auditIntervalMs(env);
+  checks.gpuStops = db.opsEvents.filter(event => event.source === "gateway" && event.action === "gpu.stop" && Date.parse(event.at) >= since)
+    .map(event => ({ id: event.id, at: event.at, reason: event.message }));
   const controller = new GpuController();
   if (env.RAZEKIT_AWS_BUDGET_NAME) checks.spend.awsBudget = await controller.budget().catch(error => ({ configured: true, error: error.message }));
   ctx.throwIfAborted();
@@ -192,27 +214,37 @@ export async function runAudit(ctx) {
     const seen = new Set();
     const find = (fingerprint, data) => { seen.add(fingerprint); return upsertFinding(tx, { ...data, fingerprint, now }); };
     if (builder.status !== "running" && builder.status !== "paused") {
-      find("process:builder:" + builder.status, { severity: builder.status === "not_configured" ? "warn" : "error", title: "System A is " + builder.status, detail: builder.reason || "", component: "builder" });
+      find("process:builder:" + builder.status, { severity: builder.status === "not_configured" ? "warn" : "error", title: "System A is " + builder.status, detail: builder.reason || "", component: "builder", alert: builder.status !== "not_configured" });
     }
     if (gateway.status !== "running" && gateway.status !== "paused") {
-      find("process:gateway:" + gateway.status, { severity: "warn", title: "Inference gateway is " + gateway.status, detail: gateway.reason || "", component: "gateway" });
+      find("process:gateway:" + gateway.status, { severity: "warn", title: "Inference gateway is " + gateway.status, detail: gateway.reason || "", component: "gateway", alert: gateway.status !== "not_configured" });
     } else if (heartbeats.gateway && !heartbeats.gateway.ollamaReachable && checks.inferenceQueue.queued > 0) {
       find("inference:unavailable", { severity: "warn", title: checks.inferenceQueue.queued + " inference request(s) waiting: model server unreachable", detail: heartbeats.gateway.ollamaError || "", component: "gateway", recommendation: "Start the GPU instance or check Ollama" });
     }
     if (checks.builderQueue.expiredLeases) find("builder:expired-leases", { severity: "warn", title: checks.builderQueue.expiredLeases + " System A task lease(s) expired", detail: "They return to the queue on System A's next claim", component: "builder" });
-    if (checks.builderQueue.deadLetter) find("builder:dead-letter", { severity: "error", title: checks.builderQueue.deadLetter + " System A task(s) dead-lettered", detail: "Retries exhausted; inspect the task errors", component: "builder" });
+    if (checks.builderQueue.deadLetter) find("builder:dead-letter", { severity: "error", title: checks.builderQueue.deadLetter + " System A task(s) dead-lettered", detail: "Retries exhausted; inspect the task errors", component: "builder", alert: true });
     if (checks.devRuntime.configured && !checks.devRuntime.ok) find("dev-runtime:health", { severity: "critical", title: "DEV runtime health check failed", detail: checks.devRuntime.error || "HTTP " + checks.devRuntime.status, component: "dev-runtime" });
     if (checks.graph.expiredNodeLeases) find("graph:expired-node-leases", { severity: "warn", title: checks.graph.expiredNodeLeases + " graph node lease(s) expired", detail: "Recovered by the JEV worker on its next claim", component: "jev" });
     if (checks.graph.openReconciliations) find("models:reconciliations", { severity: "warn", title: checks.graph.openReconciliations + " model call(s) need reconciliation", detail: "Provider outcome unknown; a person must resolve", component: "models" });
     if (checks.host.diskFreeBytes != null && checks.host.diskFreeBytes < 2 * 1024 ** 3) find("host:disk", { severity: "critical", title: "Control-plane disk below 2 GB free", detail: String(checks.host.diskFreeBytes), component: "host" });
     if (checks.spend.gpu.remainingUsd != null && checks.spend.gpu.budgetUsd && checks.spend.gpu.remainingUsd < checks.spend.gpu.budgetUsd * 0.2) {
-      find("spend:gpu-budget", { severity: "warn", title: "GPU budget 80% used", detail: JSON.stringify(checks.spend.gpu), component: "spend" });
+      find("spend:gpu-budget", { severity: "warn", title: "GPU budget 80% used", detail: JSON.stringify(checks.spend.gpu), component: "spend", alert: true });
+    }
+    for (const item of checks.models.missing) {
+      find("models:missing:" + item.slot, { severity: "error", title: "Model " + item.model + " (" + item.slot + " slot) is not installed on the model server", detail: "Requests for this slot cannot run until it is pulled", component: "models", recommendation: "ollama pull " + item.model, alert: true });
+    }
+    for (const item of checks.quota.filter(entry => entry.used >= entry.limit)) {
+      find("usage:quota:" + item.requester, { severity: "warn", title: "Daily token budget exhausted for " + item.requester, detail: item.used + " of " + item.limit + " tokens used today; further requests are refused until tomorrow (UTC)", component: "models", alert: true });
+    }
+    for (const stop of checks.gpuStops) {
+      const byLimit = /hard budget limit/i.test(stop.reason);
+      find("gpu:stopped:" + stop.id, { severity: byLimit ? "warn" : "info", title: "GPU stopped" + (byLimit ? " by the spending limit" : ""), detail: stop.at + ": " + stop.reason, component: "spend", alert: true });
     }
 
     for (const [key, ids] of failureGroups) {
       if (ids.length < 3) continue;
       const fingerprint = "repeat-failure:" + key;
-      const finding = find(fingerprint, { severity: "error", title: "Repeated failure (" + ids.length + "x): " + key.slice(0, 120), detail: "Examples: " + ids.slice(0, 5).join(", "), component: key.startsWith("agent:konami") ? "konami" : key.startsWith("agent:niomi") ? "niomi" : "dev-workflows", recommendation: "Code change needed" });
+      const finding = find(fingerprint, { severity: "error", title: "Repeated failure (" + ids.length + "x): " + key.slice(0, 120), detail: "Examples: " + ids.slice(0, 5).join(", "), component: key.startsWith("agent:konami") ? "konami" : key.startsWith("agent:niomi") ? "niomi" : "dev-workflows", recommendation: "Code change needed", alert: true });
       if (!finding.engineeringTaskId) engineering.push({ finding, key, count: ids.length });
     }
 
@@ -239,8 +271,11 @@ export async function runAudit(ctx) {
     });
   }
 
-  const critical = (await loadDb()).opsFindings.filter(item => item.status === "open" && item.severity === "critical" && !item.notifiedAt);
-  for (const finding of critical) {
+  // Told once per open finding: every critical one, and the others marked as
+  // alerts (crashed or stale processes, repeated failures, a missing model, an
+  // exhausted quota, a spending threshold, a GPU shutdown).
+  const toNotify = (await loadDb()).opsFindings.filter(item => item.status === "open" && (item.severity === "critical" || item.alert) && !item.notifiedAt);
+  for (const finding of toNotify) {
     const sent = await notifyAdmin({ subject: "[RazeKit DEV] " + finding.title, text: finding.detail || finding.title, kind: "alert" }, ctx.env);
     await transact(tx => {
       const row = tx.opsFindings.find(item => item.id === finding.id);

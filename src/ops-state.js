@@ -656,12 +656,13 @@ export async function getApproval(approvalId) {
 
 // ── Audit findings (System B) ───────────────────────────────────────────────
 
-export function upsertFinding(db, { fingerprint, severity, title, detail, component, recommendation = null, now = Date.now() }) {
+export function upsertFinding(db, { fingerprint, severity, title, detail, component, recommendation = null, alert = false, now = Date.now() }) {
   let finding = db.opsFindings.find(item => item.fingerprint === fingerprint && item.status === "open");
   if (finding) {
     finding.lastSeenAt = nowIso(now);
     finding.count += 1;
     finding.severity = severity;
+    finding.alert = Boolean(finding.alert || alert);
     finding.detail = redactText(detail).slice(0, 2000);
     return finding;
   }
@@ -673,6 +674,9 @@ export function upsertFinding(db, { fingerprint, severity, title, detail, compon
     detail: redactText(detail).slice(0, 2000),
     component,
     recommendation,
+    // Whether the administrator is told (once) while it is open. Critical
+    // findings always are; this marks the others the operator must hear about.
+    alert: Boolean(alert),
     status: "open",
     count: 1,
     firstSeenAt: nowIso(now),

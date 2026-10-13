@@ -241,6 +241,50 @@ test("System B audits real state, files one engineering task for a repeated fail
   }
 });
 
+test("alerts: a missing model, an exhausted quota, a GPU shutdown and a dead System A each notify once, truthfully", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const config = await state.getModelConfig();
+  await state.writeModelStatus({ reachable: true, runtime: { name: "ollama", version: "test" }, models: { [config.slots.coding.model]: { installed: false }, [config.slots.reasoning.model]: { installed: true } } });
+  await transact(db => {
+    db.opsModelUsage.push({ id: today + "|auditor|reasoning|m", day: today, requester: "auditor", slot: "reasoning", model: "m", requests: 1, promptTokens: 400_000, completionTokens: 100_000, totalDurationMs: 0, loadDurationMs: 0 });
+  });
+  await state.logEvent({ source: "gateway", severity: "warn", action: "gpu.stop", result: "requested", message: "Hard budget limit: Monthly GPU budget is exhausted" });
+  await state.writeHeartbeat("builder", { processId: "crashed", status: "running" }, Date.now() - 60 * 60_000);
+  const auditor = await createSupervisor("auditor", { pollMs: 20, env: { ...process.env, ADMIN_EMAIL: "" } });
+  await auditor.boot();
+  try {
+    const task = await state.enqueueTask({ system: "auditor", kind: "audit.cycle", title: "Alert audit" });
+    const done = await runOne(auditor, task.id);
+    assert.equal(done.status, "completed", done.error);
+    const open = await state.listFindings({ status: "open" });
+    const byPrefix = prefix => open.find(item => item.fingerprint.startsWith(prefix));
+    const missing = byPrefix("models:missing:coding");
+    assert.ok(missing && missing.alert, "a configured model missing from the model server is an alert");
+    assert.match(missing.recommendation, /^ollama pull /);
+    assert.ok(!byPrefix("models:missing:reasoning"), "an installed model is not reported missing");
+    assert.ok(byPrefix("usage:quota:auditor")?.alert, "an exhausted daily budget is an alert");
+    const gpuStop = byPrefix("gpu:stopped:");
+    assert.ok(gpuStop?.alert && gpuStop.severity === "warn" && /spending limit/.test(gpuStop.title));
+    assert.ok(byPrefix("process:builder:offline")?.alert, "a dead System A is an alert, not only a panel colour");
+    // With no ADMIN_EMAIL nothing is sent, and each alert says so instead of claiming delivery.
+    for (const finding of [missing, byPrefix("usage:quota:auditor"), gpuStop, byPrefix("process:builder:offline")]) {
+      const row = (await state.listFindings({ status: "open" })).find(item => item.id === finding.id);
+      assert.equal(row.notification?.sent, false, finding.fingerprint);
+      assert.match(row.notification.reason, /ADMIN_EMAIL is not configured/);
+    }
+    // Notified once: a second audit does not notify the same open findings again.
+    const before = (await state.listEvents({ source: "auditor", limit: 1000 })).filter(event => event.action === "notify.alert").length;
+    const second = await state.enqueueTask({ system: "auditor", kind: "audit.cycle", title: "Alert audit 2" });
+    await runOne(auditor, second.id);
+    const after = (await state.listEvents({ source: "auditor", limit: 1000 })).filter(event => event.action === "notify.alert").length;
+    assert.equal(after, before, "open alerts are not re-sent on every cycle");
+  } finally {
+    await auditor.shutdown();
+    await state.writeModelStatus({ reachable: false, runtime: null, models: {} });
+    await transact(db => { db.opsModelUsage = db.opsModelUsage.filter(item => item.requester !== "auditor"); });
+  }
+});
+
 test("the daily report says plainly that email is not configured instead of pretending to send", async () => {
   const auditor = await createSupervisor("auditor", { pollMs: 20, env: { ...process.env, ADMIN_EMAIL: "" } });
   await auditor.boot();
