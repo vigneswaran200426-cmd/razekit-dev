@@ -1,0 +1,29 @@
+[Unit]
+Description=RazeKit DEV System A - Builder
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=razekit-builder
+Group=razekit-builder
+WorkingDirectory=/opt/razekit-dev
+EnvironmentFile=/etc/razekit/builder.env
+ExecStart=/usr/bin/env node src/ops-supervisor.js --system=builder
+Restart=always
+RestartSec=10
+TimeoutStopSec=40
+KillSignal=SIGTERM
+# Hardening: own workspace only, no privilege gain, no other home directories.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/razekit/builder
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=3G
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target

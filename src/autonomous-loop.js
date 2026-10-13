@@ -286,9 +286,9 @@ async function advanceAgentUnguarded(agentInstanceId, { orchestrator }) {
  * One failing agent must not stop the others, so each is isolated: a thrown
  * error is recorded against that agent and the sweep continues.
  */
-export async function advanceAllAgents({ orchestrator } = {}) {
+export async function advanceAllAgents({ orchestrator, skipAgentTypes = [] } = {}) {
   const db = await loadDb();
-  const running = db.agentInstances.filter(agent => agent.status === AGENT_STATUS.RUNNING);
+  const running = db.agentInstances.filter(agent => agent.status === AGENT_STATUS.RUNNING && !skipAgentTypes.includes(agent.agentType));
 
   const results = [];
   for (const agent of running) {

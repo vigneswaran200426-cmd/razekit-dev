@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -89,7 +89,27 @@ const initialState = {
   users: [],
   // Server-side sessions. Only a SHA-256 of each token is stored, so a copy of
   // the database cannot be replayed as a login.
-  sessions: []
+  sessions: [],
+  // The two 24/7 supervisory systems (System A builder, System B auditor), the
+  // shared inference gateway and the admin controls over them. Every row says
+  // which system it belongs to, and each system claims only its own tasks,
+  // control requests and checkpoints. Additive only: nothing above changes.
+  opsHeartbeats: [],
+  opsSystemStates: [],
+  opsTasks: [],
+  opsCheckpoints: [],
+  opsControlRequests: [],
+  opsEvents: [],
+  opsAdminAudit: [],
+  opsApprovals: [],
+  opsFindings: [],
+  opsModelConfig: [],
+  opsModelStatus: [],
+  opsInferenceRequests: [],
+  opsModelUsage: [],
+  opsGpuState: [],
+  opsAgentControls: [],
+  opsSettings: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -128,6 +148,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-20-dev-accounts")) {
     db.migrationsApplied.push("phase-20-dev-accounts");
+  }
+  if (!db.migrationsApplied.includes("phase-21-ops-supervisors")) {
+    db.migrationsApplied.push("phase-21-ops-supervisors");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";
@@ -228,9 +251,27 @@ async function ensureDb() {
   }
 }
 
+// Windows refuses to rename over a file another read still has open (EPERM,
+// EACCES, EBUSY), and a reader can catch the file mid-replace. Both are
+// transient on the JSON path, so both are retried briefly rather than surfaced
+// as a failed request. POSIX never takes these branches.
+const TRANSIENT_FS = new Set(["EPERM", "EACCES", "EBUSY", "ENOENT"]);
+
+async function withFsRetry(fn) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      const transient = TRANSIENT_FS.has(error?.code) || error instanceof SyntaxError;
+      if (!transient || attempt >= 40) throw error;
+      await new Promise(resolve => setTimeout(resolve, 5 + attempt * 5));
+    }
+  }
+}
+
 async function loadJson() {
   await ensureDb();
-  return migrateState(JSON.parse(await readFile(DB_FILE, "utf8")));
+  return migrateState(await withFsRetry(async () => JSON.parse(await readFile(DB_FILE, "utf8"))));
 }
 
 export async function saveDb(db) {
@@ -241,7 +282,7 @@ export async function saveDb(db) {
   const migrated = migrateState(db);
   const tempFile = DB_FILE + ".tmp";
   await writeFile(tempFile, JSON.stringify(migrated, null, 2));
-  await rename(tempFile, DB_FILE);
+  await withFsRetry(() => rename(tempFile, DB_FILE));
 }
 
 // ── Public surface ───────────────────────────────────────────────────────────

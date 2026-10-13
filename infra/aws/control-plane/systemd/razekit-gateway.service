@@ -1,0 +1,27 @@
+[Unit]
+Description=RazeKit DEV inference gateway (local models, GPU start/stop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=razekit-gateway
+Group=razekit-gateway
+WorkingDirectory=/opt/razekit-dev
+EnvironmentFile=/etc/razekit/gateway.env
+ExecStart=/usr/bin/env node src/inference-gateway.js
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/razekit/gateway
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

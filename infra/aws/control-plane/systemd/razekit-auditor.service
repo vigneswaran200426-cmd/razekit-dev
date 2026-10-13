@@ -1,0 +1,27 @@
+[Unit]
+Description=RazeKit DEV System B - Runtime Operations and Auditor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=razekit-auditor
+Group=razekit-auditor
+WorkingDirectory=/opt/razekit-dev
+EnvironmentFile=/etc/razekit/auditor.env
+ExecStart=/usr/bin/env node src/ops-supervisor.js --system=auditor
+Restart=always
+RestartSec=10
+TimeoutStopSec=40
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/razekit/auditor
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=768M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

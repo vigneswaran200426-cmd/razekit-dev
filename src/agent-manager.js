@@ -184,9 +184,10 @@ export async function startAgent(agentId) {
   });
 }
 
-export async function processReadyTasks() {
+export async function processReadyTasks({ skipAgentTypes = [] } = {}) {
   const db = await loadDb();
-  const ready = db.tasks.filter(task => task.status === TASK_STATUS.READY_FOR_AGENT && task.authorization?.autonomousExecution);
+  const ready = db.tasks.filter(task => task.status === TASK_STATUS.READY_FOR_AGENT && task.authorization?.autonomousExecution)
+    .filter(task => !skipAgentTypes.includes(agentTypeForTask(task.taskType)));
   const started = [];
 
   for (const task of ready) {

@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.js"
   },
   "optionalDependencies": {
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "playwright-core": "^1.55.1"
   }
 }

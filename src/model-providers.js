@@ -3,6 +3,7 @@ import { DeterministicFableAdapter, DeterministicAstraAdapter } from "./testing-
 import { FableAnthropicAdapter } from "./adapters/fable-anthropic-adapter.js";
 import { AstraOpenAIAdapter } from "./adapters/astra-openai-adapter.js";
 import { GroqOpenAIAdapter } from "./adapters/groq-openai-adapter.js";
+import { OllamaGatewayAdapter } from "./adapters/ollama-gateway-adapter.js";
 
 export const MODEL_MODE = {
   TEST: "test",
@@ -45,6 +46,20 @@ export function configureModelRegistry(registry) {
     throw new Error(
       "RAZEKIT_MODEL_MODE=real requires GROQ_API_KEY or both FABLE_API_KEY and ASTRA_API_KEY"
     );
+  }
+
+  // Local models through the shared gateway, chosen explicitly. Nothing falls
+  // back to it, and it falls back to nothing: a queued request waits.
+  if (mode !== MODEL_MODE.TEST && String(process.env.RAZEKIT_AGENT_MODEL_PROVIDER || "").toLowerCase() === "gateway") {
+    const coder = new OllamaGatewayAdapter({ slot: "coding" });
+    const planner = new OllamaGatewayAdapter({ slot: "reasoning" });
+    registry.register(MODEL_PROVIDERS.FABLE, coder);
+    registry.register(MODEL_PROVIDERS.ASTRA, planner);
+    return {
+      mode: MODEL_MODE.REAL,
+      fable: { provider: "local-gateway", model: "coding slot" },
+      astra: { provider: "local-gateway", model: "reasoning slot" }
+    };
   }
 
   const useReal = mode === MODEL_MODE.REAL || (mode === MODEL_MODE.AUTO && realCredentialsPresent());

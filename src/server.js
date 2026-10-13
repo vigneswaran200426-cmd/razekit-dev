@@ -142,12 +142,15 @@ import {
   createUser,
   listUsers,
   login,
+  resolveSession,
   revokeSession,
   sessionCookie,
   sessionTokenFromRequest,
   setUserStatus
 } from "./auth.js";
 import { loginPage } from "./login-page.js";
+import { adminOpsPage } from "./admin-ops-page.js";
+import { handleAdminOps } from "./admin-ops-api.js";
 import {
   assertAdminToken,
   assertOperator,
@@ -230,6 +233,26 @@ const server = http.createServer(async (req,res) => {
       return res.end(dashboardPage);
     }
 
+    // The admin control center shell. Signed-out visitors are sent to sign in;
+    // members are refused here as well as by every API it calls, so the page
+    // is not even served to someone who could not use it.
+    if (req.method === "GET" && (p === "/admin/24-7" || p === "/admin/24-7/")) {
+      const headers = {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","X-Frame-Options":"DENY","Referrer-Policy":"same-origin"};
+      if (authMode() === AUTH_MODES.SESSION && !validAdminToken(req.headers["x-razekit-admin-token"])) {
+        const session = await resolveSession(sessionTokenFromRequest(req.headers));
+        if (!session) {
+          res.writeHead(302, { Location: "/login?next=" + encodeURIComponent("/admin/24-7"), "Cache-Control":"no-store" });
+          return res.end();
+        }
+        if (![ROLES.OWNER, ROLES.ADMIN].includes(session.user.role)) {
+          res.writeHead(403, headers);
+          return res.end("<!doctype html><meta charset=utf-8><title>Forbidden</title><body style=\"font-family:system-ui;background:#07111f;color:#eef6ff;padding:40px\"><h1>Administrator access required</h1><p>The Admin Control Center is available to owners and administrators. <a style=\"color:#50c7ff\" href=\"/\">Back to the Control Center</a></p></body>");
+        }
+      }
+      res.writeHead(200, headers);
+      return res.end(adminOpsPage);
+    }
+
     if (req.method === "GET" && p === "/login") {
       res.writeHead(200, {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
       return res.end(loginPage);
@@ -297,6 +320,17 @@ const server = http.createServer(async (req,res) => {
       : await resolvePrincipal(req.headers);
 
     if (req.method !== "GET" && req.method !== "HEAD") assertSameOrigin(req);
+
+    // Admin control center API: privileged, checked inside the handler.
+    if (p.startsWith("/api/admin/ops/")) {
+      const runtime = {
+        store: storeKind(),
+        models: modelConfiguration,
+        modelsConfigured: Boolean(modelConfiguration?.mode),
+        coordinatorEnabled: COORDINATOR_ENABLED
+      };
+      if (await handleAdminOps({ req, res, p, principal, body, json, runtime })) return;
+    }
 
     // The machine and operator surface. In session mode an ordinary account
     // never reaches it: worker leases, checkpoints, workspaces and tool
@@ -1358,3 +1392,5 @@ function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+export { server, runtimeCoordinator };
