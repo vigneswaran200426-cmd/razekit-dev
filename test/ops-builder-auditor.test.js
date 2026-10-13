@@ -8,6 +8,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "razekit-ops-ba-"));
 const fixtureRepo = path.join(dataDir, "origin-repo");
+// The supervisors refuse to boot when they can see another system's secret.
+// A developer shell or CI runner may export real credentials; a test must not
+// depend on them being absent, so they are removed for this process.
+for (const name of ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "RAZEKIT_BUILDER_GITHUB_TOKEN", "RAZEKIT_AUDITOR_TOKEN"]) delete process.env[name];
 Object.assign(process.env, {
   RAZEKIT_DATA_DIR: dataDir,
   RAZEKIT_STORE: "json",
@@ -81,8 +85,17 @@ function scriptedGateway(script) {
       await sleep(50);
     }
   })();
-  return { seen, stop: async () => { stop = true; await loop; } };
+  const handle = { seen, stop: async () => { stop = true; await loop; } };
+  liveGateways.push(handle);
+  return handle;
 }
+
+// Stopped after every test, failed or not: a test that throws before its own
+// stop() would otherwise leave this loop polling and the file would never exit.
+const liveGateways = [];
+test.afterEach(async () => {
+  await Promise.all(liveGateways.splice(0).map(gateway => gateway.stop()));
+});
 
 test("node --test summaries are parsed from real output", () => {
   const summary = parseNodeTestSummary("✔ a (1ms)\n✖ b (2ms)\nℹ tests 2\nℹ pass 1\nℹ fail 1\nℹ skipped 0\n✖ failing tests:\n✖ b (2ms)\n");

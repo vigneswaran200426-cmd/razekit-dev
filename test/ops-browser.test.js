@@ -10,7 +10,7 @@ const dataDir = await mkdtemp(path.join(os.tmpdir(), "razekit-browser-"));
 process.env.RAZEKIT_DATA_DIR = dataDir;
 process.env.RAZEKIT_STORE = "json";
 
-const { runBrowserCheck, DEFAULT_BROWSER_POLICY } = await import("../src/ops-browser.js");
+const { runBrowserCheck, DEFAULT_BROWSER_POLICY, PlaywrightBrowserAdapter } = await import("../src/ops-browser.js");
 const { listEvents } = await import("../src/ops-state.js");
 
 // A real headless Chrome, driven over a pipe. Skipped only where no Chrome or
@@ -20,6 +20,16 @@ const executable = candidates.find(item => existsSync(item));
 const env = { ...process.env, RAZEKIT_BROWSER_EXECUTABLE: executable || "" };
 
 test.after(() => rm(dataDir, { recursive: true, force: true }));
+
+test("a step cannot widen the adapter's policy: the metadata service stays unreachable", async () => {
+  const adapter = new PlaywrightBrowserAdapter({ env });
+  const step = {
+    url: "http://169.254.169.254/latest/meta-data/",
+    policy: { defaultAction: "allow", allowedHosts: ["169.254.169.254"], allowedPorts: [80], denyPrivateNetworks: false },
+    checks: []
+  };
+  await assert.rejects(() => adapter.execute(step), /not allowed by policy|Private or local network/);
+});
 
 test("the policy refuses the instance metadata service and private addresses before a browser starts", async () => {
   await assert.rejects(() => runBrowserCheck({ url: "http://169.254.169.254/latest/meta-data/", policy: { ...DEFAULT_BROWSER_POLICY, allowedHosts: ["169.254.169.254"] }, env }), /Private or local network/);

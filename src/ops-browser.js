@@ -136,9 +136,11 @@ export class PlaywrightBrowserAdapter {
 
   async execute(step) {
     const checks = (step.checks || []).map(check => (typeof check === "string" ? { type: "text-includes", value: check } : check));
+    // The policy is the adapter's own, never the step's: a step can come from
+    // a model-written plan, and must not be able to widen what it may reach.
     const evidence = await runBrowserCheck({
       url: step.url,
-      policy: step.policy || this.policy,
+      policy: this.policy,
       checks,
       requester: "niomi",
       taskId: step.context?.taskId || null,

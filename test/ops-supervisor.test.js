@@ -5,6 +5,10 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "razekit-ops-sup-"));
+// The supervisors refuse to boot when they can see another system's secret.
+// A developer shell or CI runner may export real credentials; a test must not
+// depend on them being absent, so they are removed for this process.
+for (const name of ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "RAZEKIT_BUILDER_GITHUB_TOKEN", "RAZEKIT_AUDITOR_TOKEN"]) delete process.env[name];
 process.env.RAZEKIT_DATA_DIR = dataDir;
 process.env.RAZEKIT_STORE = "json";
 process.env.RAZEKIT_OPS_ALLOW_JSON_STORE = "true";

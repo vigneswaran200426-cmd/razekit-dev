@@ -18,6 +18,10 @@ const BASE = "http://127.0.0.1:" + PORT;
 const BOOTSTRAP = "bootstrap-token-" + "y".repeat(24);
 const OPERATOR = "operator-token-for-admin-ops-tests";
 const PASSWORD = "correct horse battery staple 42";
+// The supervisors refuse to boot when they can see another system's secret.
+// A developer shell or CI runner may export real credentials; a test must not
+// depend on them being absent, so they are removed for this process.
+for (const name of ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SESSION_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "RAZEKIT_BUILDER_GITHUB_TOKEN", "RAZEKIT_AUDITOR_TOKEN"]) delete process.env[name];
 Object.assign(process.env, {
   PORT: String(PORT),
   RAZEKIT_DATA_DIR: dataDir,
