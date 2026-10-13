@@ -24,6 +24,11 @@ Object.assign(process.env, {
   RAZEKIT_AUDITOR_REPAIRS: ""
 });
 delete process.env.RAZEKIT_BUILDER_GITHUB_TOKEN;
+// Model-written code runs in bubblewrap wherever it can create namespaces;
+// elsewhere these tests opt in to an unsandboxed run explicitly.
+const BWRAP = spawnSync("bwrap", ["--unshare-all", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "true"]).status === 0;
+if (BWRAP) process.env.RAZEKIT_BUILDER_SANDBOX = "bwrap";
+else process.env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED = "true";
 
 const { createSupervisor } = await import("../src/ops-supervisor.js");
 const { parseNodeTestSummary } = await import("../src/ops-builder.js");
@@ -151,6 +156,26 @@ test("a code change: plan, scoped edit, real tests, review, commit — and no PR
   assert.deepEqual(gateway.seen, ["builder:plan", "builder:implement", "builder:review"]);
   assert.equal(git(["rev-parse", "main"]), git(["rev-parse", "HEAD"]), "the origin's main branch is untouched");
   await builder.shutdown();
+});
+
+test("a code change refuses to run model-written code without a sandbox", async () => {
+  const saved = { sandbox: process.env.RAZEKIT_BUILDER_SANDBOX, allow: process.env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED };
+  process.env.RAZEKIT_BUILDER_SANDBOX = "process";
+  delete process.env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED;
+  try {
+    const builder = await createSupervisor("builder", { pollMs: 20 });
+    await builder.boot();
+    const task = await state.enqueueTask({ system: "builder", kind: "code.change", scopeArea: "dev-frontend", title: "Unsandboxed", goal: "x", maxAttempts: 1 });
+    const done = await runOne(builder, task.id);
+    assert.equal(done.status, "failed");
+    assert.match(done.error, /Refusing to run model-written code without a sandbox/);
+    const db = await loadDb();
+    assert.equal(db.opsInferenceRequests.filter(item => item.requester === "builder" && item.purpose === "builder:plan" && item.createdAt >= task.createdAt).length, 0, "no model call is made first");
+    await builder.shutdown();
+  } finally {
+    if (saved.sandbox === undefined) delete process.env.RAZEKIT_BUILDER_SANDBOX; else process.env.RAZEKIT_BUILDER_SANDBOX = saved.sandbox;
+    if (saved.allow === undefined) delete process.env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED; else process.env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED = saved.allow;
+  }
 });
 
 test("an edit outside the task's scope area is refused before anything is written", async () => {

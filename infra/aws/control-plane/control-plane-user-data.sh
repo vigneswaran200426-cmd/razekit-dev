@@ -12,8 +12,9 @@
 # with configure.sh (Session Manager), never baked into user data.
 #
 # System A is deliberately NOT in the docker group: that group is root on the
-# host. Builds run as its own hardened user (see the systemd unit); a
-# container sandbox needs rootless Docker, which is a later step.
+# host. Model-written code runs in bubblewrap instead (no network, empty
+# environment, no view of the builder's env file or processes, .git
+# read-only); the builder refuses to run model-written code without it.
 set -uo pipefail
 exec > >(tee -a /var/log/razekit-bootstrap.log) 2>&1
 
@@ -31,7 +32,7 @@ echo "== razekit bootstrap $(date -u +%FT%TZ) ref=$REPO_REF"
 if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi
 
 apt-get update -y
-apt-get install -y git python3 python3-pip ca-certificates curl xz-utils iptables-persistent
+apt-get install -y git python3 python3-pip ca-certificates curl xz-utils iptables-persistent bubblewrap apparmor
 
 # Node.js 22 LTS from nodejs.org, checksum-verified.
 cd /tmp
@@ -65,6 +66,26 @@ CHROME=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | h
 if [ -n "$CHROME" ] && ! grep -q '^RAZEKIT_BROWSER_EXECUTABLE=' /etc/razekit/builder.env; then echo "RAZEKIT_BROWSER_EXECUTABLE=$CHROME" >> /etc/razekit/builder.env; fi
 # The administrator address is not a secret; it is passed in at launch.
 if [ -n "${ADMIN_EMAIL:-}" ]; then sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=${ADMIN_EMAIL}|" /etc/razekit/auditor.env; fi
+
+# ── Sandbox for model-written code ──────────────────────────────────────────
+# Ubuntu 24.04 denies unprivileged user namespaces unless an AppArmor profile
+# grants them; this one grants them to bwrap only.
+cat > /etc/apparmor.d/razekit-bwrap <<'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+profile razekit-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+PROFILE
+apparmor_parser -r /etc/apparmor.d/razekit-bwrap || echo "WARN: could not load the bwrap AppArmor profile"
+# Enabled only if it actually works as the builder user; otherwise the builder
+# stays in "process" mode, where it refuses model-written code.
+if sudo -u razekit-builder bwrap --unshare-all --die-with-parent --ro-bind / / --proc /proc --dev /dev true; then
+  sed -i 's|^RAZEKIT_BUILDER_SANDBOX=.*|RAZEKIT_BUILDER_SANDBOX=bwrap|' /etc/razekit/builder.env
+  echo "sandbox: bwrap OK"
+else
+  echo "WARN: bwrap unavailable for razekit-builder; model-written code will be refused"
+fi
 
 # ── Egress restrictions ─────────────────────────────────────────────────────
 # Instance metadata (and so the instance role) is reachable only by the

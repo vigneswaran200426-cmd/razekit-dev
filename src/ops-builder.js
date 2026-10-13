@@ -18,11 +18,16 @@ import { NonRetryableError, TaskParked } from "./ops-supervisor.js";
 // There is no merge function and no deploy function in this module. A draft
 // pull request is as far as System A can go.
 
-const ALLOWED_COMMANDS = new Set(["git", "node", "npm", "docker"]);
+const ALLOWED_COMMANDS = new Set(["git", "node", "npm", "docker", "bwrap"]);
+export const SANDBOXES = Object.freeze(["bwrap", "docker", "process"]);
 const OUTPUT_CAP = 200_000;
 
 export function runCommand(command, args, { cwd, timeoutMs = 10 * 60_000, signal = null, env = {}, input = null } = {}) {
   if (!ALLOWED_COMMANDS.has(command)) return Promise.reject(new NonRetryableError("Command not allowed: " + command));
+  // Repository hooks never run. Model-written code shares the working tree, so
+  // a hook it planted would otherwise execute on the host at commit or push
+  // time, where the push credential is in reach.
+  if (command === "git") args = ["-c", "core.hooksPath=/dev/null", ...args];
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -77,6 +82,7 @@ function repoConfig(env) {
     testTimeoutMs: Number(env.RAZEKIT_BUILDER_TEST_TIMEOUT_MS || 20 * 60_000),
     inferenceWaitMs: Number(env.RAZEKIT_BUILDER_INFERENCE_WAIT_MS || 120_000),
     sandbox: env.RAZEKIT_BUILDER_SANDBOX || "process",
+    allowUnsandboxed: env.RAZEKIT_BUILDER_ALLOW_UNSANDBOXED === "true",
     sandboxImage: env.RAZEKIT_BUILDER_SANDBOX_IMAGE || "node:22-bookworm-slim"
   };
 }
@@ -112,26 +118,63 @@ async function prepareRepo(ctx, cfg) {
 }
 
 /**
- * Model-written code runs in a container when the host has Docker
- * (RAZEKIT_BUILDER_SANDBOX=docker, set on the control plane): no network, no
- * capabilities, an unprivileged user, bounded memory, CPU and processes, and
- * only the workspace mounted. Without it the run is a child process of the
- * builder's own restricted Unix user.
+ * Where model-written code runs.
+ *
+ *   bwrap   bubblewrap: new user, PID, network and IPC namespaces; no network;
+ *           an empty environment; only /usr, the Node install and the
+ *           workspace are visible, with the workspace's .git read-only. Needs
+ *           no root and no Docker group (the control-plane default).
+ *   docker  a no-network, capability-free container with .git read-only.
+ *   process a plain child process of the builder's own user. That user can
+ *           read the builder's environment (database URL, GitHub token) via
+ *           /proc, so model-written code is refused here unless
+ *           RAZEKIT_BUILDER_ALLOW_UNSANDBOXED=true (local tests only).
  */
-function testCommand(ctx, cfg) {
-  if (cfg.sandbox === "docker") {
+export function sandboxedCommand(sandbox, dir, command, args, { image = "node:22-bookworm-slim", env = {} } = {}) {
+  if (!SANDBOXES.includes(sandbox)) throw new NonRetryableError("Unknown builder sandbox: " + sandbox);
+  const gitDir = path.join(dir, ".git");
+  const hasGit = existsSync(gitDir);
+  const inner = { RAZEKIT_STORE: "json", NODE_ENV: "test", CI: "true", HOME: "/tmp", ...env };
+  if (sandbox === "docker") {
     return ["docker", ["run", "--rm", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--user", "1000:1000", "--memory", "2g", "--cpus", "1.5", "--pids-limit", "512", "--read-only", "--tmpfs", "/tmp",
-      "-e", "RAZEKIT_STORE=json", "-e", "NODE_ENV=test", "-e", "HOME=/tmp",
-      "-v", ctx.repoDir + ":/work", "-w", "/work", cfg.sandboxImage, "npm", "test"]];
+      ...Object.entries(inner).flatMap(([key, value]) => ["-e", key + "=" + value]),
+      "-v", dir + ":/work", ...(hasGit ? ["-v", gitDir + ":/work/.git:ro"] : []),
+      "-w", "/work", image, command, ...args]];
   }
-  return ["npm", ["test"]];
+  if (sandbox === "bwrap") {
+    const nodePrefix = path.dirname(path.dirname(process.execPath));
+    const binds = ["--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin"];
+    if (!nodePrefix.startsWith("/usr/")) binds.push("--ro-bind", nodePrefix, nodePrefix);
+    return ["bwrap", ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+      "--setenv", "PATH", path.join(nodePrefix, "bin") + ":/usr/local/bin:/usr/bin:/bin",
+      ...Object.entries(inner).flatMap(([key, value]) => ["--setenv", key, String(value)]),
+      ...binds, "--ro-bind-try", "/etc/passwd", "/etc/passwd", "--ro-bind-try", "/etc/group", "/etc/group",
+      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+      "--bind", dir, "/work", ...(hasGit ? ["--ro-bind", gitDir, "/work/.git"] : []),
+      "--chdir", "/work", command, ...args]];
+  }
+  return [command, args];
+}
+
+/** Refuses to run model-written code where it could read the builder's secrets. */
+export function assertSandboxForModelCode(cfg) {
+  if (cfg.sandbox === "process" && !cfg.allowUnsandboxed) {
+    throw new NonRetryableError("Refusing to run model-written code without a sandbox: set RAZEKIT_BUILDER_SANDBOX=bwrap (or docker). " +
+      "In process mode it could read this process's database URL and GitHub token.");
+  }
+}
+
+function testCommand(ctx, cfg) {
+  return sandboxedCommand(cfg.sandbox, ctx.repoDir, "npm", ["test"], { image: cfg.sandboxImage });
 }
 
 async function runTests(ctx, cfg) {
   const started = Date.now();
   const [command, args] = testCommand(ctx, cfg);
-  const result = await runCommand(command, args, { cwd: ctx.repoDir, signal: ctx.signal, timeoutMs: cfg.testTimeoutMs, env: { RAZEKIT_STORE: "json", NODE_ENV: "test" } });
+  // For bwrap and docker the inner environment is set by sandboxedCommand;
+  // the launcher itself gets only the whitelist in runCommand.
+  const result = await runCommand(command, args, { cwd: ctx.repoDir, signal: ctx.signal, timeoutMs: cfg.testTimeoutMs, env: cfg.sandbox === "process" ? { RAZEKIT_STORE: "json", NODE_ENV: "test" } : {} });
   const summary = parseNodeTestSummary(result.stdout + "\n" + result.stderr);
   return { exitCode: result.code, passed: result.code === 0, durationMs: Date.now() - started, sandbox: cfg.sandbox, ...summary, tail: redactText((result.stdout + result.stderr).slice(-4000)) };
 }
@@ -223,6 +266,7 @@ async function codeChange(ctx, cfg) {
   const { task } = ctx;
   const scopeArea = task.scopeArea;
   if (!BUILDER_SCOPE_AREAS[scopeArea]) throw new NonRetryableError("code.change needs one of the seven scope areas");
+  assertSandboxForModelCode(cfg);
   const state = ctx.checkpoint?.data ? { ...ctx.checkpoint.data } : { stage: "start", repairRound: 0 };
   const branch = "builder/" + task.id.replace(/^opstask_/, "").slice(0, 12);
 
@@ -358,7 +402,14 @@ function fixturePath(dir, rel) {
   return path.join(dir, value);
 }
 
-async function codingTest(ctx) {
+/** The fixture's tests: the model wrote the code, so they run sandboxed. */
+function fixtureTests(cfg, dir, signal) {
+  const [command, args] = sandboxedCommand(cfg.sandbox, dir, "npm", ["test"], { image: cfg.sandboxImage });
+  return runCommand(command, args, { cwd: dir, timeoutMs: 120_000, signal });
+}
+
+async function codingTest(ctx, cfg) {
+  assertSandboxForModelCode(cfg);
   const config = await getModelConfig();
   const model = config.slots.coding.model;
   const dir = path.join(ctx.workspace, "fixture");
@@ -394,7 +445,7 @@ async function codingTest(ctx) {
         if (call.name === "list_files") output = (await listFixture(dir)).join("\n");
         else if (call.name === "read_file") output = await readFile(fixturePath(dir, call.arguments.path), "utf8");
         else if (call.name === "write_file") { await writeFile(fixturePath(dir, call.arguments.path), String(call.arguments.content ?? "")); output = "written"; }
-        else if (call.name === "run_tests") { const run = await runCommand("npm", ["test"], { cwd: dir, timeoutMs: 120_000, signal: ctx.signal }); output = "exit " + run.code + "\n" + (run.stdout + run.stderr).slice(-3000); }
+        else if (call.name === "run_tests") { const run = await fixtureTests(cfg, dir, ctx.signal); output = "exit " + run.code + "\n" + (run.stdout + run.stderr).slice(-3000); }
         else if (call.name === "finish") { finished = String(call.arguments.summary || ""); output = "ok"; }
         else output = "unknown tool " + call.name;
       } catch (error) {
@@ -407,7 +458,7 @@ async function codingTest(ctx) {
     await ctx.checkpointWrite("coding-test-turn-" + turn, st);
   }
   // The verdict is the real test run, not the model's account of it.
-  const verify = await runCommand("npm", ["test"], { cwd: dir, timeoutMs: 120_000, signal: ctx.signal });
+  const verify = await fixtureTests(cfg, dir, ctx.signal);
   const diff = (await runCommand("git", ["diff", "--no-color"], { cwd: dir })).stdout;
   const usedTools = [...new Set(st.toolLog.map(item => item.tool))];
   const ok = verify.code === 0 && usedTools.includes("read_file") && usedTools.includes("write_file");
@@ -463,7 +514,7 @@ export function builderHandlers(options = {}) {
       switch (ctx.task.kind) {
         case "repo.inspect": return repoInspect(ctx, cfg);
         case "code.change": return codeChange(ctx, cfg);
-        case "model.coding_test": return codingTest(ctx);
+        case "model.coding_test": return codingTest(ctx, cfg);
         case "model.reasoning_test": return reasoningTest(ctx);
         default: throw new NonRetryableError("System A does not handle task kind " + ctx.task.kind);
       }

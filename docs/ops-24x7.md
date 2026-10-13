@@ -53,6 +53,23 @@ process accepted it. The page shows exactly that sequence.
   the agent coordinator on every loop.
 - Logs and audit records are redacted before storage (`redactText`/`redactValue`).
 
+## Where model-written code runs
+
+System A runs code a model wrote (its own edits, and the coding acceptance
+test's fixture) only inside a sandbox, set by `RAZEKIT_BUILDER_SANDBOX`:
+
+| Mode | Isolation |
+|---|---|
+| `bwrap` (control-plane default) | bubblewrap: new user, PID, network and IPC namespaces; no network; empty environment; only `/usr`, the Node install and the workspace visible; `.git` read-only |
+| `docker` | no-network, capability-free container, `.git` read-only |
+| `process` | none. Model-written code is **refused** here (it could read the builder's database URL and GitHub token through `/proc`) unless `RAZEKIT_BUILDER_ALLOW_UNSANDBOXED=true`, which only the local tests set |
+
+Every git command System A runs disables repository hooks
+(`core.hooksPath=/dev/null`), so nothing planted in the working tree executes
+at commit or push time. `test/ops-sandbox.test.js` attacks the sandbox for
+real: it reads the parent's secrets, lists host processes, plants a git hook
+and calls the network, and requires all four to fail.
+
 ## Models
 
 | Slot | Default | Registry facts (verified 2026-10-09 against registry.ollama.ai) |
