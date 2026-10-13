@@ -23,7 +23,7 @@ const DATA_DIR = path.resolve(process.env.RAZEKIT_DATA_DIR || "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 let transactionQueue = Promise.resolve();
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const initialState = {
   schemaVersion: SCHEMA_VERSION,
@@ -109,7 +109,10 @@ const initialState = {
   opsModelUsage: [],
   opsGpuState: [],
   opsAgentControls: [],
-  opsSettings: []
+  opsSettings: [],
+  // Operational email waiting for the process allowed to send it (the
+  // gateway: the only one that may use the instance role). Additive.
+  opsNotifications: []
 };
 
 export const COLLECTIONS = Object.keys(initialState);
@@ -151,6 +154,9 @@ export function migrateState(raw) {
   }
   if (!db.migrationsApplied.includes("phase-21-ops-supervisors")) {
     db.migrationsApplied.push("phase-21-ops-supervisors");
+  }
+  if (!db.migrationsApplied.includes("phase-22-notification-outbox")) {
+    db.migrationsApplied.push("phase-22-notification-outbox");
   }
   for (const task of db.tasks) {
     if (!task.tenantId) task.tenantId = "local-tenant";

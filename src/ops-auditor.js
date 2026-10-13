@@ -21,7 +21,7 @@ import {
 import { gatewayConfig, gpuCostSoFar } from "./inference-gateway.js";
 import { GpuController } from "./gpu-controller.js";
 import { NonRetryableError } from "./ops-supervisor.js";
-import { notifyAdmin } from "./ops-notify.js";
+import { notify } from "./ops-notify.js";
 
 // System B — Runtime Operations and Auditor.
 //
@@ -276,7 +276,7 @@ export async function runAudit(ctx) {
   // exhausted quota, a spending threshold, a GPU shutdown).
   const toNotify = (await loadDb()).opsFindings.filter(item => item.status === "open" && (item.severity === "critical" || item.alert) && !item.notifiedAt);
   for (const finding of toNotify) {
-    const sent = await notifyAdmin({ subject: "[RazeKit DEV] " + finding.title, text: finding.detail || finding.title, kind: "alert" }, ctx.env);
+    const sent = await notify({ subject: "[RazeKit DEV] " + finding.title, text: finding.detail || finding.title, kind: "alert", findingId: finding.id }, ctx.env);
     await transact(tx => {
       const row = tx.opsFindings.find(item => item.id === finding.id);
       if (row) { row.notifiedAt = new Date().toISOString(); row.notification = sent; }
@@ -304,8 +304,8 @@ async function dailyReport(ctx) {
     "Open findings: " + db.opsFindings.filter(item => item.status === "open").map(item => "[" + item.severity + "] " + item.title).join("; "),
     "Model usage: " + usage.map(row => row.requester + "/" + row.slot + "/" + row.model + " " + row.requests + " req " + (row.promptTokens + row.completionTokens) + " tok").join("; ")
   ];
-  const sent = await notifyAdmin({ subject: "[RazeKit DEV] Daily operations report", text: lines.join("\n"), kind: "report" }, ctx.env);
-  return { summary: "Daily report " + (sent.sent ? "sent to the admin" : "recorded; not emailed (" + sent.reason + ")"), report: lines, notification: sent };
+  const sent = await notify({ subject: "[RazeKit DEV] Daily operations report", text: lines.join("\n"), kind: "report" }, ctx.env);
+  return { summary: "Daily report " + (sent.sent ? "sent to the admin" : sent.queued ? "queued for the gateway to deliver" : "recorded; not emailed (" + sent.reason + ")"), report: lines, notification: sent };
 }
 
 export function auditorHandlers() {
