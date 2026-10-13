@@ -117,6 +117,7 @@ async function askModel(system, user, maxTokens = 2800) {
   try { data = JSON.parse(text); }
   catch {
     const where = r.redirected ? " after a redirect to " + new URL(r.url).origin + new URL(r.url).pathname : "";
+    if (PROVIDER.name === "github-models") log("Diagnosis: " + await diagnoseGithubModels());
     throw new Error(PROVIDER.name + " answered HTTP " + r.status + " " + (r.headers.get("content-type") || "no content-type") + where + " with a non-JSON body: " + JSON.stringify(text.slice(0, 200)));
   }
   const choice = data.choices?.[0];
@@ -124,6 +125,23 @@ async function askModel(system, user, maxTokens = 2800) {
   if (data.usage) log("Model " + PROVIDER.name + "/" + PROVIDER.model + " usage: " + (data.usage.prompt_tokens ?? "?") + " in, " + (data.usage.completion_tokens ?? "?") + " out");
   return String(choice.message?.content || "");
 }
+/** What the GitHub Models service says about itself, for an unusable answer. No secret is printed. */
+async function diagnoseGithubModels() {
+  const parts = [];
+  try {
+    const c = await fetch("https://models.github.ai/catalog/models", { headers: { authorization: "Bearer " + PROVIDER.key, accept: "application/vnd.github+json", ...PROVIDER.headers }, signal: AbortSignal.timeout(20000) });
+    const text = await c.text();
+    let count = null; try { const j = JSON.parse(text); count = Array.isArray(j) ? j.length : null; } catch {}
+    parts.push("catalog HTTP " + c.status + " " + (c.headers.get("content-type") || "") + (count != null ? ", " + count + " models" : ", body " + JSON.stringify(text.slice(0, 80))));
+  } catch (e) { parts.push("catalog error " + e.message); }
+  try {
+    const m = await fetch(PROVIDER.url, { method: "POST", headers: { authorization: "Bearer " + PROVIDER.key, "content-type": "application/json", ...PROVIDER.headers }, body: JSON.stringify({ model: PROVIDER.model, messages: [{ role: "user", content: "Reply with the word ready." }], max_tokens: 5 }), signal: AbortSignal.timeout(30000) });
+    const text = await m.text();
+    parts.push("minimal request HTTP " + m.status + " " + (m.headers.get("content-type") || "") + " body " + JSON.stringify(text.slice(0, 120)));
+  } catch (e) { parts.push("minimal request error " + e.message); }
+  return parts.join("; ");
+}
+
 async function findPRs() {
   const all = await gh("/repos/" + REPO + "/pulls?state=all&per_page=100&sort=updated&direction=desc");
   return all.filter(p => p.head?.ref === BRANCH && p.base?.ref === "main");
