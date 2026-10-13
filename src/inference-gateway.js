@@ -306,7 +306,9 @@ export class InferenceGateway {
 
     const gpuState = await getGpuState();
     const budget = await this.budgetAllowsGpu();
-    if (this.gpu?.configured && gpuState?.state === "running" && !budget.allowed && budget.cost.remainingUsd != null) {
+    // A running GPU with no hard limit is stopped as well: the rule is "no GPU
+    // compute without a limit", whoever started it.
+    if (this.gpu?.configured && gpuState?.state === "running" && !budget.allowed) {
       await this.stopGpu("Hard budget limit: " + budget.reason).catch(error => logEvent({ source: "gateway", severity: "critical", action: "gpu.stop_failed", message: error.message }));
     }
 

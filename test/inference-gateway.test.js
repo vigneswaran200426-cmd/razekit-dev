@@ -167,6 +167,17 @@ test("the GPU is never started without an hourly rate and a hard monthly budget"
   await state.finishInference(request.id, { ok: false, model: null, error: "cleanup" });
 });
 
+test("a GPU found running without a configured hard limit is stopped", async () => {
+  await state.updateGpuState({ state: "running", runningMsByMonth: {} });
+  const gpu = fakeGpu("running");
+  const gateway = new InferenceGateway({ ollama: new OllamaClient({ baseUrl: "http://127.0.0.1:9" }), gpu, env: {} });
+  gateway.lastGpuCheckAt = Date.now();
+  gateway.lastActivityAt = Date.now();
+  await gateway.tick();
+  assert.ok(gpu.calls.includes("stop"), "no rate or budget configured: a running GPU is stopped, not left running");
+  await state.updateGpuState({ state: "stopped" });
+});
+
 test("with a budget, queued work starts the GPU; idle time stops it; an exhausted budget stops it", async () => {
   const env = { RAZEKIT_GPU_AUTO_START: "true", RAZEKIT_GPU_HOURLY_USD: "0.80", RAZEKIT_GPU_MONTHLY_BUDGET_USD: "40", RAZEKIT_GPU_IDLE_STOP_MINUTES: "1" };
   const gpu = fakeGpu("stopped");
