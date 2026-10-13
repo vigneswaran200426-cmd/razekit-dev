@@ -13,8 +13,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # GitHub Models through the workflow's own token: the no-cost provider used
-  # when GROQ_API_KEY is not configured.
+  # GitHub Models through the workflow's own token, only when opted in with the
+  # RAZEKIT_AUTOBUILD_PROVIDER repository variable. On 2026-10-13 its endpoints
+  # answered a plain "OK" to every request from this repository's runs.
   models: read
 
 concurrency:
@@ -41,16 +42,22 @@ jobs:
         id: provider
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPT_IN_PROVIDER: ${{ vars.RAZEKIT_AUTOBUILD_PROVIDER }}
         run: |
           if [ -n "$GROQ_API_KEY" ]; then
             echo "name=groq" >> "$GITHUB_OUTPUT"
             echo "Provider: Groq (GROQ_API_KEY is configured)." >> "$GITHUB_STEP_SUMMARY"
-          else
+          elif [ "$OPT_IN_PROVIDER" = "github-models" ]; then
             echo "name=github-models" >> "$GITHUB_OUTPUT"
-            echo "Provider: GitHub Models via the workflow token (GROQ_API_KEY is not configured)." >> "$GITHUB_STEP_SUMMARY"
+            echo "Provider: GitHub Models via the workflow token (opted in with the RAZEKIT_AUTOBUILD_PROVIDER variable)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "name=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::NOT RUN: no model credential. Add the Actions secret GROQ_API_KEY to enable building."
+            echo "**NOT RUN: no model provider is configured, so nothing was built.** Add the Actions secret \`GROQ_API_KEY\`." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Generate, sandbox-test and submit one DEV improvement
+        if: steps.provider.outputs.name != 'none'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
