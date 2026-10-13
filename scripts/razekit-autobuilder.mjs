@@ -34,10 +34,10 @@ const DYNAMIC_SAFE_FILES = [
  */
 export function providerConfig(env = process.env) {
   if (env.GROQ_API_KEY) {
-    return { name: "groq", url: "https://api.groq.com/openai/v1/chat/completions", model: env.GROQ_MODEL || "openai/gpt-oss-120b", key: env.GROQ_API_KEY, extra: { reasoning_effort: "low" } };
+    return { name: "groq", url: "https://api.groq.com/openai/v1/chat/completions", model: env.GROQ_MODEL || "openai/gpt-oss-120b", key: env.GROQ_API_KEY, headers: {}, extra: { reasoning_effort: "low" } };
   }
   if (env.RAZEKIT_AUTOBUILD_PROVIDER === "github-models" && env.GITHUB_TOKEN) {
-    return { name: "github-models", url: "https://models.github.ai/inference/chat/completions", model: env.GITHUB_MODELS_MODEL || "openai/gpt-4.1", key: env.GITHUB_TOKEN, extra: {} };
+    return { name: "github-models", url: "https://models.github.ai/inference/chat/completions", model: env.GITHUB_MODELS_MODEL || "openai/gpt-4.1", key: env.GITHUB_TOKEN, headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" }, extra: {} };
   }
   return { name: "none" };
 }
@@ -96,7 +96,7 @@ async function gh(p, options = {}) {
 async function askModel(system, user, maxTokens = 2800) {
   const r = await fetch(PROVIDER.url, {
     method: "POST",
-    headers: { authorization: "Bearer " + PROVIDER.key, "content-type": "application/json" },
+    headers: { authorization: "Bearer " + PROVIDER.key, "content-type": "application/json", ...PROVIDER.headers },
     body: JSON.stringify({
       model: PROVIDER.model,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
@@ -110,7 +110,12 @@ async function askModel(system, user, maxTokens = 2800) {
     const retry = r.headers.get("retry-after");
     throw new Error(PROVIDER.name + " HTTP " + r.status + " (" + code + ")" + (retry ? "; retry-after=" + retry + "s" : "") + "; paid fallback disabled");
   }
-  const data = await r.json();
+  // Read as text first: a non-JSON answer is reported as what it was, not as
+  // a JSON syntax error. The response body holds no credential.
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error(PROVIDER.name + " answered HTTP " + r.status + " " + (r.headers.get("content-type") || "no content-type") + " with a non-JSON body: " + JSON.stringify(text.slice(0, 200))); }
   const choice = data.choices?.[0];
   if (!choice || choice.finish_reason === "length") throw new Error(PROVIDER.name + " response was missing or truncated");
   if (data.usage) log("Model " + PROVIDER.name + "/" + PROVIDER.model + " usage: " + (data.usage.prompt_tokens ?? "?") + " in, " + (data.usage.completion_tokens ?? "?") + " out");
