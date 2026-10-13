@@ -23,7 +23,7 @@ read -r -p "ADMIN_EMAIL for alerts (Enter to keep current): " MAIL
 
 for name in builder auditor gateway; do set_var "/etc/razekit/$name.env" RAZEKIT_DATABASE_URL "$DB"; done
 [ -n "$GH" ] && set_var /etc/razekit/builder.env RAZEKIT_BUILDER_GITHUB_TOKEN "$GH"
-[ -n "$MAIL" ] && set_var /etc/razekit/auditor.env ADMIN_EMAIL "$MAIL"
+[ -n "$MAIL" ] && set_var /etc/razekit/gateway.env ADMIN_EMAIL "$MAIL"
 for name in builder auditor gateway; do chown "razekit-$name:razekit-$name" "/etc/razekit/$name.env"; chmod 0600 "/etc/razekit/$name.env"; done
 unset DB GH
 

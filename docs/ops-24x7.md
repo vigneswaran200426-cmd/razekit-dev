@@ -70,6 +70,22 @@ at commit or push time. `test/ops-sandbox.test.js` attacks the sandbox for
 real: it reads the parent's secrets, lists host processes, plants a git hook
 and calls the network, and requires all four to fail.
 
+## Alerts and email
+
+System B decides what the administrator must hear about; the gateway sends it.
+On the control plane only the gateway may reach the instance role that SES
+needs, so System B (`RAZEKIT_NOTIFY_VIA=gateway`) queues notifications in
+`opsNotifications` and the gateway delivers them to `ADMIN_EMAIL` from its own
+environment. Each ends as `sent` or `not_sent` with the reason; nothing is
+called delivered before SES accepted it.
+
+Alerts, each sent once per open finding: any critical finding; System A or the
+gateway stale, offline or failed; dead-lettered System A tasks; a repeated
+runtime failure; a configured model missing from the model server; a
+requester's daily token budget exhausted; the GPU budget 80% used; a GPU stop.
+System B cannot report its own absence, so the gateway watches System B's
+heartbeat and alerts once per incident.
+
 ## Models
 
 | Slot | Default | Registry facts (verified 2026-10-09 against registry.ollama.ai) |

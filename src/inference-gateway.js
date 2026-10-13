@@ -11,8 +11,11 @@ import {
   finishInference,
   getGpuState,
   getInference,
+  getHeartbeats,
   getModelConfig,
+  getSetting,
   logEvent,
+  setSetting,
   recordModelTest,
   requeueStuckInference,
   resolveControlRequest,
@@ -22,7 +25,8 @@ import {
   writeModelStatus
 } from "./ops-state.js";
 import { loadDb } from "./store.js";
-import { heartbeatThresholds } from "./ops-domain.js";
+import { deriveProcessStatus, heartbeatThresholds } from "./ops-domain.js";
+import { deliverQueuedNotifications, notify } from "./ops-notify.js";
 
 // The shared, budget-controlled inference gateway.
 //
@@ -294,9 +298,33 @@ export class InferenceGateway {
     });
   }
 
+  /**
+   * The gateway is the only process allowed to send email, and the one that
+   * notices when System B itself has stopped: an auditor cannot report its own
+   * absence. One notification per incident.
+   */
+  async operations(now = Date.now()) {
+    try {
+      const auditor = deriveProcessStatus((await getHeartbeats()).auditor, { now, thresholds: heartbeatThresholds(this.env) });
+      const watch = await getSetting("auditor-watch", { incident: null });
+      if (["stale", "offline", "failed"].includes(auditor.status) && !watch.incident) {
+        await notify({ subject: "[RazeKit DEV] System B is " + auditor.status, text: "The Runtime Operations and Auditor process is " + auditor.status + ". " + (auditor.reason || ""), kind: "alert" }, { ...this.env, RAZEKIT_NOTIFY_VIA: "gateway" });
+        await setSetting("auditor-watch", { incident: { status: auditor.status, at: new Date(now).toISOString() } }, "gateway");
+        await logEvent({ source: "gateway", severity: "error", action: "auditor.watch", result: auditor.status, message: "System B is " + auditor.status });
+      } else if (["running", "paused"].includes(auditor.status) && watch.incident) {
+        await setSetting("auditor-watch", { incident: null, lastRecoveredAt: new Date(now).toISOString() }, "gateway");
+        await logEvent({ source: "gateway", action: "auditor.watch", result: "recovered", message: "System B is reporting again" });
+      }
+      await deliverQueuedNotifications(this.env, this.notifyOptions || {});
+    } catch (error) {
+      await logEvent({ source: "gateway", severity: "error", action: "notify.delivery_failed", message: error.message }).catch(() => {});
+    }
+  }
+
   async tick(now = Date.now()) {
     const emergency = await emergencyState();
     await this.handleControls();
+    await this.operations(now);
     await this.refreshOllama();
     if (now - this.lastGpuCheckAt >= 60_000) {
       this.lastGpuCheckAt = now;

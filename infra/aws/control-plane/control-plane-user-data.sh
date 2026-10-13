@@ -65,7 +65,7 @@ done
 CHROME=$(ls -d /opt/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)
 if [ -n "$CHROME" ] && ! grep -q '^RAZEKIT_BROWSER_EXECUTABLE=' /etc/razekit/builder.env; then echo "RAZEKIT_BROWSER_EXECUTABLE=$CHROME" >> /etc/razekit/builder.env; fi
 # The administrator address is not a secret; it is passed in at launch.
-if [ -n "${ADMIN_EMAIL:-}" ]; then sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=${ADMIN_EMAIL}|" /etc/razekit/auditor.env; fi
+if [ -n "${ADMIN_EMAIL:-}" ]; then sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=${ADMIN_EMAIL}|" /etc/razekit/gateway.env; fi
 
 # ── Sandbox for model-written code ──────────────────────────────────────────
 # Ubuntu 24.04 denies unprivileged user namespaces unless an AppArmor profile

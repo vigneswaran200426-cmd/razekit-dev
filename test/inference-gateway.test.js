@@ -242,3 +242,56 @@ test("Niomi/Konami adapter: attributed to the agent, retryable while queued, sha
   assert.equal(answer.usage.inputTokens, 50);
   assert.equal((await loadDb()).opsInferenceRequests.filter(item => item.purpose === "konami:implementer").length, 1, "the retry reused the queued request instead of asking twice");
 });
+
+// ── Operational email: System B queues, the gateway delivers ───────────────
+
+const { notify } = await import("../src/ops-notify.js");
+
+test("a queued alert is delivered by the gateway, and reported as not sent when no address exists", async () => {
+  const finding = await (await import("../src/store.js")).transact(db => state.upsertFinding(db, { fingerprint: "test:outbox", severity: "error", title: "Outbox test", detail: "x", component: "builder", alert: true }));
+  const queued = await notify({ subject: "[RazeKit DEV] Outbox test", text: "x", kind: "alert", findingId: finding.id }, { RAZEKIT_NOTIFY_VIA: "gateway" });
+  assert.equal(queued.sent, false);
+  assert.equal(queued.queued, true, "System B only queues; it never claims delivery");
+
+  const gateway = new InferenceGateway({ ollama: new OllamaClient({ baseUrl: "http://127.0.0.1:9" }), gpu: null, env: {} });
+  await gateway.operations();
+  const db = await loadDb();
+  const row = db.opsNotifications.find(item => item.id === queued.notificationId);
+  assert.equal(row.status, "not_sent");
+  assert.match(row.result.reason, /ADMIN_EMAIL is not configured/);
+  assert.match(db.opsFindings.find(item => item.id === finding.id).notification.reason, /ADMIN_EMAIL is not configured/);
+});
+
+test("with an address and SES configured, the gateway sends to the administrator only", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => { requests.push({ url, body: JSON.parse(init.body), headers: init.headers }); return new Response("{}", { status: 200 }); };
+  const credentials = { get: async () => ({ accessKeyId: "AKIDTEST", secretAccessKey: "secret", sessionToken: null, source: "test" }) };
+  const queued = await notify({ subject: "[RazeKit DEV] Delivery test", text: "body", kind: "alert" }, { RAZEKIT_NOTIFY_VIA: "gateway" });
+  const env = { ADMIN_EMAIL: "owner@example.test", RAZEKIT_NOTIFY_PROVIDER: "ses", RAZEKIT_NOTIFY_FROM: "alerts@example.test", RAZEKIT_AWS_REGION: "us-east-2" };
+  const gateway = new InferenceGateway({ ollama: new OllamaClient({ baseUrl: "http://127.0.0.1:9" }), gpu: null, env });
+  gateway.notifyOptions = { fetchImpl, credentials };
+  await gateway.operations();
+  const sent = requests.filter(item => item.body.Content?.Simple?.Subject?.Data === "[RazeKit DEV] Delivery test");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://email.us-east-2.amazonaws.com/v2/email/outbound-emails");
+  assert.deepEqual(sent[0].body.Destination, { ToAddresses: ["owner@example.test"] });
+  assert.match(sent[0].headers.authorization, /^AWS4-HMAC-SHA256 /);
+  const row = (await loadDb()).opsNotifications.find(item => item.id === queued.notificationId);
+  assert.equal(row.status, "sent");
+  // Delivered once: another tick sends nothing new.
+  await gateway.operations();
+  assert.equal(requests.filter(item => item.body.Content?.Simple?.Subject?.Data === "[RazeKit DEV] Delivery test").length, 1);
+});
+
+test("the gateway reports System B going silent once per incident, and clears it when System B returns", async () => {
+  const gateway = new InferenceGateway({ ollama: new OllamaClient({ baseUrl: "http://127.0.0.1:9" }), gpu: null, env: {} });
+  await state.writeHeartbeat("auditor", { processId: "auditor-gone", status: "running" }, Date.now() - 60 * 60_000);
+  await gateway.operations();
+  await gateway.operations();
+  const about = (await loadDb()).opsNotifications.filter(item => /System B is offline/.test(item.subject));
+  assert.equal(about.length, 1, "one notification per incident, not one per tick");
+  assert.equal((await state.getSetting("auditor-watch")).incident.status, "offline");
+  await state.writeHeartbeat("auditor", { processId: "auditor-back", status: "running" }, Date.now());
+  await gateway.operations();
+  assert.equal((await state.getSetting("auditor-watch")).incident, null);
+});
