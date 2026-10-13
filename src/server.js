@@ -151,6 +151,8 @@ import {
 import { loginPage } from "./login-page.js";
 import { adminOpsPage } from "./admin-ops-page.js";
 import { handleAdminOps } from "./admin-ops-api.js";
+import { kiyaraPage } from "./kiyara-page.js";
+import { describeControlRequest, executeKiyaraAction, handleKiyaraMessage, kiyaraState } from "./kiyara.js";
 import {
   assertAdminToken,
   assertOperator,
@@ -251,6 +253,18 @@ const server = http.createServer(async (req,res) => {
       }
       res.writeHead(200, headers);
       return res.end(adminOpsPage);
+    }
+
+    // Kiyara's page: any signed-in account. What she can do is decided by the
+    // caller's role on every API call, not by what the page shows.
+    if (req.method === "GET" && (p === "/kiyara" || p === "/kiyara/")) {
+      const headers = {"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store","X-Frame-Options":"DENY","Referrer-Policy":"same-origin"};
+      if (authMode() === AUTH_MODES.SESSION && !(await resolveSession(sessionTokenFromRequest(req.headers)))) {
+        res.writeHead(302, { Location: "/login?next=" + encodeURIComponent("/kiyara"), "Cache-Control":"no-store" });
+        return res.end();
+      }
+      res.writeHead(200, headers);
+      return res.end(kiyaraPage);
     }
 
     if (req.method === "GET" && p === "/login") {
@@ -526,6 +540,20 @@ const server = http.createServer(async (req,res) => {
         agent:started,
         warnings:confirmation.warnings
       });
+    }
+
+    if (p.startsWith("/api/kiyara/")) {
+      if (principal.role !== "operator") assertTenantActive(await ensureTenant(principal.tenantId));
+      if (req.method === "GET" && p === "/api/kiyara/state") return json(res,200,await kiyaraState(principal));
+      if (req.method === "POST" && p === "/api/kiyara/message") {
+        const input = await body(req);
+        if (typeof input.text !== "string" || input.text.length > 2000) return json(res,400,{ error:"text must be a string of at most 2000 characters" });
+        return json(res,200,await handleKiyaraMessage(principal, input.text));
+      }
+      if (req.method === "POST" && p === "/api/kiyara/action") return json(res,202,await executeKiyaraAction(principal, await body(req)));
+      const km = p.match(/^\/api\/kiyara\/requests\/([^/]+)$/);
+      if (req.method === "GET" && km) return json(res,200,await describeControlRequest(principal, km[1]));
+      return json(res,404,{ error:"Not found" });
     }
 
     if (req.method === "GET" && p === "/api/tasks") {
